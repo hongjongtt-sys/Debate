@@ -212,7 +212,7 @@ window.teacherLogout = async () => { await signOut(auth); location.reload(); };
 async function gemini(prompt, json = true) {
   const key = LS.get('gemini_key');
   if (!key) throw new Error('관리 화면 → 설정에서 Gemini API 키를 먼저 입력하세요.');
-  const model = LS.get('gemini_model') || 'gemini-2.5-flash';
+  const model = LS.get('gemini_model') || 'gemini-3.8-flash';
   const body = {contents:[{role:'user', parts:[{text:prompt}]}], generationConfig:{temperature:0.4}};
   if (json) body.generationConfig.responseMimeType = 'application/json';
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
@@ -1071,7 +1071,9 @@ const Admin = {
     return `<div class="card"><h2>AI (Gemini) 설정</h2>
       <p class="mute">키는 이 기기의 브라우저에만 저장됩니다. 진행 화면을 띄울 노트북에서 설정하세요.</p>
       <label>Gemini API 키</label><input id="gk" type="password" value="${esc(LS.get('gemini_key', ''))}" placeholder="AIza...">
-      <label>모델</label><input id="gm" value="${esc(LS.get('gemini_model', 'gemini-2.5-flash'))}">
+      <label>모델</label><input id="gm" list="gmodels" value="${esc(LS.get('gemini_model', 'gemini-3.8-flash'))}">
+      <datalist id="gmodels"><option value="gemini-3.8-flash"><option value="gemini-3.6-flash"><option value="gemini-3.5-flash-lite"></datalist>
+      <p class="mute">기본값 gemini-3.8-flash. 무료 사용량 한도에 자주 걸리면 gemini-3.5-flash-lite로 바꿔 보세요.</p>
       <div class="row" style="margin-top:12px"><button onclick="Admin.saveAI()">저장</button><button class="ghost" onclick="Admin.testAI(this)">연결 테스트</button></div></div>
       <div class="card"><h2>음성 (판사 멘트)</h2>
       <label><input type="checkbox" id="von" style="width:auto" ${TTS.on() ? 'checked' : ''}> 진행 화면에서 음성으로 읽기</label>
@@ -1079,7 +1081,7 @@ const Admin = {
       <label>속도: <span id="vrv">${LS.get('voice_rate', '1')}</span></label><input type="range" id="vrate" min="0.7" max="1.4" step="0.05" value="${LS.get('voice_rate', '1')}" oninput="$('#vrv').textContent=this.value">
       <div class="row" style="margin-top:12px"><button onclick="Admin.saveVoice()">저장</button><button class="ghost" onclick="Admin.saveVoice();TTS.speak('지금부터 찬반토론을 시작하겠습니다. 찬성 측의 입장 발표를 들어 보겠습니다.')">들어보기</button></div></div>`;
   },
-  saveAI() { LS.set('gemini_key', $('#gk').value.trim()); LS.set('gemini_model', $('#gm').value.trim() || 'gemini-2.5-flash'); toast('저장했습니다'); },
+  saveAI() { LS.set('gemini_key', $('#gk').value.trim()); LS.set('gemini_model', $('#gm').value.trim() || 'gemini-3.8-flash'); toast('저장했습니다'); },
   async testAI(btn) {
     this.saveAI(); btn.disabled = true; btn.textContent = '테스트 중…';
     try { const r = await gemini('"연결 성공"이라고만 답하라.', false); toast('✅ ' + r.slice(0, 40)); } catch (e) { toast('❌ ' + e.message, 6000); }
