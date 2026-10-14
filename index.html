@@ -212,17 +212,33 @@ window.teacherLogout = async () => { await signOut(auth); location.reload(); };
 async function gemini(prompt, json = true) {
   const key = LS.get('gemini_key');
   if (!key) throw new Error('관리 화면 → 설정에서 Gemini API 키를 먼저 입력하세요.');
-  const model = LS.get('gemini_model') || 'gemini-3.8-flash';
+  const main = LS.get('gemini_model') || 'gemini-3.8-flash';
+  // 서버 혼잡(503)·한도(429) 시 재시도 후 예비 모델로 자동 전환
+  const models = [...new Set([main, 'gemini-3.6-flash', 'gemini-3.5-flash-lite'])];
   const body = {contents:[{role:'user', parts:[{text:prompt}]}], generationConfig:{temperature:0.4}};
   if (json) body.generationConfig.responseMimeType = 'application/json';
-  const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-    method:'POST', headers:{'Content-Type':'application/json', 'x-goog-api-key':key}, body:JSON.stringify(body)
-  });
-  if (!r.ok) {
-    const t = await r.text();
-    if (r.status === 429) throw new Error('무료 사용량 한도에 걸렸습니다. 1분쯤 뒤에 다시 시도하세요.');
-    if (r.status === 400 && /API key/i.test(t)) throw new Error('API 키가 올바르지 않습니다.');
-    throw new Error('AI 오류 ' + r.status + ': ' + t.slice(0, 160));
+  let r, lastStatus = 0, lastText = '';
+  outer: for (const model of models) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
+          method:'POST', headers:{'Content-Type':'application/json', 'x-goog-api-key':key}, body:JSON.stringify(body)
+        });
+      } catch { r = null; lastStatus = 0; lastText = '네트워크 오류'; await sleep(1500); continue; }
+      if (r.ok) break outer;
+      lastStatus = r.status; lastText = await r.text();
+      if (r.status === 400 && /API key/i.test(lastText)) throw new Error('API 키가 올바르지 않습니다.');
+      if (r.status === 403) throw new Error('이 키로는 Gemini를 쓸 수 없습니다. 키를 다시 확인하세요.');
+      if (r.status === 404) continue outer;            // 이 모델을 쓸 수 없음 → 다음 모델
+      if (r.status === 503 || r.status === 500) { await sleep(2000 * (attempt + 1)); continue; }
+      if (r.status === 429) continue outer;            // 이 모델 한도 초과 → 다음 모델
+      throw new Error('AI 오류 ' + r.status + ': ' + lastText.slice(0, 160));
+    }
+  }
+  if (!r || !r.ok) {
+    if (lastStatus === 429) throw new Error('무료 사용량 한도에 걸렸습니다. 1분쯤 뒤에 다시 시도하세요.');
+    if (lastStatus === 503 || lastStatus === 500) throw new Error('구글 AI 서버가 혼잡합니다. 잠시 후 다시 눌러 주세요.');
+    throw new Error('AI 연결 실패 (' + (lastStatus || '네트워크') + ')');
   }
   const d = await r.json();
   const text = (d.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
