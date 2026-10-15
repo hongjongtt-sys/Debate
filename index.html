@@ -431,53 +431,106 @@ function renderLogin(denied) {
    학생 화면
    ===================================================================== */
 const Student = {
-  sid:null, s:null, cls:null, me:null, role:null, records:[], myVote:null, myReport:null, lastStage:-1, unsub:[],
+  sid:null, s:null, cls:null, classId:null, me:null, role:null, records:[], myVote:null, myReport:null, lastStage:-1, unsub:[],
+  ident() { try { return JSON.parse(LS.get('me') || 'null'); } catch { return null; } },
   async start() {
-    this.sid = params.get('s');
-    if (!this.sid) {
-      const a = await getDoc(doc(db, 'debate_meta', 'active'));
-      this.sid = a.exists() ? a.data().sid : null;
-    }
-    if (!this.sid) { app.innerHTML = `<div class="wrap"><div class="card" style="text-align:center;margin-top:40px"><h2>진행 중인 토론이 없습니다</h2><p class="mute">선생님이 토론을 열면 QR코드로 다시 접속하세요.</p><p class="mute"><a href="#admin" onclick="setTimeout(()=>location.reload())">교사</a></p></div></div>`; return; }
-    const sd = await getDoc(sref(this.sid));
-    if (!sd.exists()) { app.innerHTML = `<div class="wrap"><div class="card">토론을 찾을 수 없습니다.</div></div>`; return; }
-    this.s = sd.data();
-    const cd = await getDoc(doc(db, 'debate_classes', this.s.classId));
-    this.cls = cd.exists() ? cd.data() : {students:[]};
-    this.me = LS.get('me_' + this.sid);
-    if (!this.me || !nameMap(this.cls)[this.me]) return this.renderLogin();
-    this.enter();
+    const id = this.ident();
+    if (!id) return this.renderLogin();
+    const cd = await getDoc(doc(db, 'debate_classes', id.classId));
+    if (!cd.exists() || !nameMap(cd.data())[id.no]) { LS.del('me'); return this.renderLogin(); }
+    this.cls = cd.data(); this.classId = id.classId; this.me = id.no;
+    const sid = params.get('s');
+    if (sid) return this.openSession(sid);
+    this.home();
   },
+  /* ----- 학번 로그인 (기기에 기억) ----- */
   renderLogin(cand) {
-    const nm = nameMap(this.cls);
-    app.innerHTML = `<div class="top"><div class="wrap"><b>⚖️ ${esc(T(this.s).name)}</b></div></div>
+    app.innerHTML = `<div class="top"><div class="wrap"><b>⚖️ 토론법정</b></div></div>
     <div class="wrap"><div class="card" style="max-width:420px;margin:24px auto">
-      <h2>${esc(this.s.title)}</h2>
-      ${cand ? `<p style="font-size:22px;text-align:center;margin:20px 0"><b>${esc(cand)}</b> ${esc(nm[cand])} 학생이 맞나요?</p>
-        <div class="row"><button class="ghost grow" onclick="Student.renderLogin()">아니요</button><button class="grow" onclick="Student.confirm('${esc(cand)}')">네, 맞아요</button></div>`
-      : `<label>학번</label><input id="no" inputmode="numeric" placeholder="예: 20301" autofocus>
+      ${cand ? `<p style="font-size:22px;text-align:center;margin:20px 0"><b>${esc(cand.no)}</b> ${esc(cand.name)} 학생이 맞나요?</p>
+        <div class="row"><button class="ghost grow" onclick="Student.renderLogin()">아니요</button><button class="grow" onclick="Student.confirm()">네, 맞아요</button></div>`
+      : `<h2>학번으로 시작하기</h2><p class="mute">한 번 입력하면 이 기기에서 기억합니다.</p>
+        <label>학번</label><input id="no" inputmode="numeric" placeholder="예: 20301" autofocus>
         <p id="err" style="color:var(--con);min-height:22px"></p>
-        <button style="width:100%" onclick="Student.lookup()">확인</button>`}
+        <button style="width:100%" id="lbtn" onclick="Student.lookup()">확인</button>`}
+      <p class="mute" style="text-align:center;margin-top:18px"><a href="#admin" onclick="setTimeout(()=>location.reload())">교사</a></p>
     </div></div>`;
+    this.cand = cand;
     const inp = $('#no'); if (inp) inp.onkeydown = e => { if (e.key === 'Enter') Student.lookup(); };
   },
-  lookup() {
-    const no = $('#no').value.trim();
-    if (!nameMap(this.cls)[no]) { $('#err').textContent = '명단에 없는 학번입니다. 다시 확인하세요.'; return; }
-    this.renderLogin(no);
+  async lookup() {
+    const no = $('#no').value.trim(); if (!no) return;
+    $('#lbtn').disabled = true;
+    const cs = (await getDocs(collection(db, 'debate_classes'))).docs.map(d => ({id:d.id, ...d.data()}))
+      .filter(c => nameMap(c)[no]).sort((a, b) => (b.year || 0) - (a.year || 0));
+    $('#lbtn').disabled = false;
+    if (!cs.length) { $('#err').textContent = '명단에 없는 학번입니다. 다시 확인하세요.'; return; }
+    this.renderLogin({no, name:nameMap(cs[0])[no], classId:cs[0].id});
   },
-  async confirm(no) {
-    this.me = no; LS.set('me_' + this.sid, no);
-    // 같은 기기(같은 익명 계정)로 접속했던 이전 학번은 접속 목록에서 지움 → 기기 1대 = 학생 1명
-    const mine = await getDocs(query(collection(db, 'debate_sessions', this.sid, 'presence'), where('uid', '==', USER.uid)));
-    await Promise.all(mine.docs.filter(d => d.id !== no).map(d => deleteDoc(d.ref)));
-    await setDoc(doc(db, 'debate_sessions', this.sid, 'presence', no), {name:nameMap(this.cls)[no], ts:Date.now(), uid:USER.uid});
-    this.enter();
+  confirm() {
+    const c = this.cand; LS.set('me', JSON.stringify({no:c.no, classId:c.classId}));
+    location.reload();
   },
   async logout() {
-    if (!confirm('접속을 종료할까요? 작성한 내용은 저장되어 있습니다.')) return;
-    try { await deleteDoc(doc(db, 'debate_sessions', this.sid, 'presence', this.me)); } catch {}
-    LS.del('me_' + this.sid); location.reload();
+    if (!confirm('학번을 바꿀까요? 작성한 내용은 저장되어 있습니다.')) return;
+    try {
+      const a = await getDoc(doc(db, 'debate_meta', 'active'));
+      if (a.exists()) await deleteDoc(doc(db, 'debate_sessions', a.data().sid, 'presence', this.me));
+    } catch {}
+    LS.del('me'); location.href = location.pathname;
+  },
+  /* ----- 메인 화면: 나의 토론 ----- */
+  home() {
+    const nm = nameMap(this.cls)[this.me];
+    let sessions = [], active = null;
+    const draw = () => {
+      const st = s => s.id === active ? 'live' : (s.status === 'done' ? 'done' : 'prep');
+      const mine = s => roleOf(s, this.me);
+      const live = sessions.find(s => st(s) === 'live');
+      const prep = sessions.filter(s => st(s) === 'prep' && mine(s).side !== 'aud');
+      const done = sessions.filter(s => st(s) === 'done');
+      const item = (s, extra) => {
+        const r = mine(s), t = T(s);
+        const badge = r.side === 'pro' ? `<span class="badge pro">${esc(t.pro)}${r.clerk ? ' · 서기' : ''}</span>` : r.side === 'con' ? `<span class="badge con">${esc(t.con)}${r.clerk ? ' · 서기' : ''}</span>` : `<span class="badge gold">${esc(t.aud)}</span>`;
+        return `<div class="list-item" style="cursor:pointer" onclick="location.href='?s=${s.id}'"><div class="grow"><b>${esc(s.title)}</b><div class="mute">${esc(s.date || '날짜 미정')} · ${esc(t.name)}</div></div>${badge}${extra || ''}<span style="font-size:20px">›</span></div>`;
+      };
+      app.innerHTML = `<div class="top"><div class="wrap"><b class="grow">⚖️ 토론법정</b><span style="font-size:14px">${esc(this.me)} ${esc(nm)}</span><button class="ghost sm" onclick="Student.logout()">학번 변경</button></div></div>
+      <div class="wrap">
+        ${live ? `<div class="card" style="border:2px solid var(--con);cursor:pointer" onclick="location.href='?s=${live.id}'">
+            <div class="row"><span class="badge con">🔴 지금 진행 중</span><span class="mute grow">${esc(live.date || '')}</span></div>
+            <h2 style="margin-top:8px">${esc(live.title)}</h2>
+            <button style="width:100%;margin-top:8px">참여하기</button></div>`
+          : `<div class="card mute" style="text-align:center">지금 진행 중인 토론은 없습니다.</div>`}
+        <div class="card"><h3>✍️ 내가 토론자인 주제</h3><p class="mute">토론 전에 사전 보고서를 미리 작성하세요.</p>
+          ${prep.map(s => { const rep = this.reps?.[s.id]; return item(s, rep ? '<span class="badge gold">보고서 ✅</span>' : '<span class="badge">보고서 미제출</span>'); }).join('') || '<p class="mute">준비 중인 토론이 없습니다.</p>'}</div>
+        <div class="card"><h3>📁 지난 토론</h3>${done.map(s => item(s)).join('') || '<p class="mute">아직 없습니다.</p>'}</div>
+      </div>`;
+    };
+    this.reps = {};
+    this.unsub.push(onSnapshot(doc(db, 'debate_meta', 'active'), d => { active = d.exists() ? d.data().sid : null; draw(); }));
+    this.unsub.push(onSnapshot(query(collection(db, 'debate_sessions'), where('classId', '==', this.classId)), async q => {
+      sessions = q.docs.map(d => ({id:d.id, ...d.data()})).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
+      draw();
+      await Promise.all(sessions.filter(s => roleOf(s, this.me).side !== 'aud').map(async s => {
+        const r = await getDoc(doc(db, 'debate_sessions', s.id, 'reports', this.me)); this.reps[s.id] = r.exists() && !!r.data().pre;
+      }));
+      draw();
+    }));
+  },
+  async openSession(sid) {
+    const sd = await getDoc(sref(sid));
+    if (!sd.exists()) { app.innerHTML = `<div class="wrap"><div class="card">토론을 찾을 수 없습니다. <a href="${location.pathname}">목록으로</a></div></div>`; return; }
+    this.s = sd.data();
+    if (this.s.classId !== this.classId) { app.innerHTML = `<div class="wrap"><div class="card">우리 반 토론이 아닙니다. <a href="${location.pathname}">목록으로</a></div></div>`; return; }
+    this.sid = sid;
+    const a = await getDoc(doc(db, 'debate_meta', 'active'));
+    if (a.exists() && a.data().sid === sid) {
+      // 진행 중인 토론에만 접속 기록. 같은 기기로 접속했던 다른 학번은 지움 → 기기 1대 = 학생 1명
+      const mine = await getDocs(query(collection(db, 'debate_sessions', sid, 'presence'), where('uid', '==', USER.uid)));
+      await Promise.all(mine.docs.filter(d => d.id !== this.me).map(d => deleteDoc(d.ref)));
+      await setDoc(doc(db, 'debate_sessions', sid, 'presence', this.me), {name:nameMap(this.cls)[this.me], ts:Date.now(), uid:USER.uid});
+    }
+    this.enter();
   },
   async enter() {
     const sid = this.sid;
@@ -505,7 +558,7 @@ const Student = {
     const nm = nameMap(this.cls)[this.me];
     return `<div class="top"><div class="wrap"><b class="grow">⚖️ ${esc(this.s.title)}</b>
       <span style="font-size:14px">${esc(this.me)} ${esc(nm)}</span>${this.roleBadge()}
-      <button class="ghost sm" onclick="Student.logout()">나가기</button></div></div>`;
+      <button class="ghost sm" onclick="location.href=location.pathname">← 목록</button></div></div>`;
   },
   stageBar() {
     const st = STAGES[this.s.stage];
@@ -900,12 +953,16 @@ const Admin = {
   sessionList() {
     if (!this.classes.length) return `<div class="card"><h2>토론 회차</h2><p>먼저 <b>학급 명단</b> 탭에서 학급을 등록하세요.</p><button onclick="Admin.setTab('classes')">학급 명단으로</button></div>`;
     return `<div class="card"><div class="row"><h2 class="grow">토론 회차</h2><button onclick="Admin.newSession()">+ 새 토론</button></div>
+      <p class="mute">✍️ 준비 중: 토론자가 사전 보고서를 미리 씀 · 🔴 진행 중: 한 번에 하나, 모든 학생 화면 맨 위에 뜸 (▶ 진행 화면을 누르면 자동 전환) · 📁 종료: 지난 토론으로 이동</p>
       ${this.sessions.map(s => {
         const c = this.cls(s.classId);
         return `<div class="list-item">
-          <div class="grow"><div>${this.active === s.id ? '<span class="badge gold">학생 접속 중</span> ' : ''}<span class="badge">${esc(T(s).name)}</span> <b>${esc(s.title)}</b></div>
+          <div class="grow"><div><span class="badge">${esc(T(s).name)}</span> <b>${esc(s.title)}</b></div>
           <div class="mute">${esc(c ? c.year + ' ' + c.name : '')} · ${esc(s.date || '날짜 미정')} · ${esc(stageName(s, s.stage))} · 찬성 ${(s.pro || []).length} / 반대 ${(s.con || []).length}</div></div>
-          ${this.active === s.id ? '' : `<button class="ghost sm" onclick="Admin.activate('${s.id}')">학생 접속 열기</button>`}
+          <select style="width:auto;padding:6px 8px;font-weight:700;${this.active === s.id ? 'color:var(--con);border-color:var(--con)' : s.status === 'done' ? 'color:var(--mute)' : ''}" onchange="Admin.setStatus('${s.id}', this.value)">
+            <option value="prep" ${this.active !== s.id && s.status !== 'done' ? 'selected' : ''}>✍️ 준비 중</option>
+            <option value="live" ${this.active === s.id ? 'selected' : ''}>🔴 진행 중</option>
+            <option value="done" ${this.active !== s.id && s.status === 'done' ? 'selected' : ''}>📁 종료</option></select>
           <button class="sm" onclick="Admin.openBoard('${s.id}')">▶ 진행 화면</button>
           <button class="ghost sm" onclick="Admin.showQR('${s.id}')">QR</button>
           <button class="ghost sm" onclick="Admin.editSession('${s.id}')">수정</button>
@@ -967,8 +1024,7 @@ const Admin = {
     if (!data.proClerk || !data.conClerk) return toast('양측 서기를 지정하세요');
     if (e.id) await updateDoc(sref(e.id), data);
     else {
-      const ref = await addDoc(collection(db, 'debate_sessions'), {...data, stage:0, timer:{running:false, endsAt:null, remaining:0}, ai:{}, speech:{text:'', ts:0}, verdict:null, createdAt:Date.now()});
-      await setDoc(doc(db, 'debate_meta', 'active'), {sid:ref.id});
+      await addDoc(collection(db, 'debate_sessions'), {...data, status:'prep', stage:0, timer:{running:false, endsAt:null, remaining:0}, ai:{}, speech:{text:'', ts:0}, verdict:null, createdAt:Date.now()});
     }
     toast('저장했습니다'); await this.load(); this.setTab('sessions');
   },
@@ -982,7 +1038,20 @@ const Admin = {
     if (this.active === id) await deleteDoc(doc(db, 'debate_meta', 'active'));
     await this.load(); this.render();
   },
-  async activate(id) { await setDoc(doc(db, 'debate_meta', 'active'), {sid:id}); this.active = id; this.render(); toast('학생들이 이 토론으로 접속합니다'); },
+  async activate(id) {
+    await setDoc(doc(db, 'debate_meta', 'active'), {sid:id});
+    await updateDoc(sref(id), {status:'live'});
+    const prev = this.sessions.find(x => x.id === this.active && x.id !== id);
+    if (prev && prev.status === 'live') await updateDoc(sref(prev.id), {status:'prep'});
+    await this.load(); this.render(); toast('이 토론이 학생 화면 맨 위에 "진행 중"으로 뜹니다');
+  },
+  async setStatus(id, st) {
+    if (st === 'live') return this.activate(id);
+    await updateDoc(sref(id), {status:st});
+    if (this.active === id) await deleteDoc(doc(db, 'debate_meta', 'active'));
+    await this.load(); this.render();
+    toast(st === 'done' ? '종료: 학생 화면의 "지난 토론"으로 이동했습니다' : '준비 중: 토론자만 사전 보고서를 쓸 수 있습니다');
+  },
   async openBoard(id) {
     const w = window.open('', 'debate_board');   // 팝업 차단 방지: 클릭 직후 창부터 연다
     if (this.active !== id) await this.activate(id);
