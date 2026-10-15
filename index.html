@@ -468,12 +468,21 @@ const Student = {
   },
   async confirm(no) {
     this.me = no; LS.set('me_' + this.sid, no);
+    // 같은 기기(같은 익명 계정)로 접속했던 이전 학번은 접속 목록에서 지움 → 기기 1대 = 학생 1명
+    const mine = await getDocs(query(collection(db, 'debate_sessions', this.sid, 'presence'), where('uid', '==', USER.uid)));
+    await Promise.all(mine.docs.filter(d => d.id !== no).map(d => deleteDoc(d.ref)));
     await setDoc(doc(db, 'debate_sessions', this.sid, 'presence', no), {name:nameMap(this.cls)[no], ts:Date.now(), uid:USER.uid});
     this.enter();
   },
-  logout() { LS.del('me_' + this.sid); location.reload(); },
-  enter() {
+  async logout() {
+    if (!confirm('접속을 종료할까요? 작성한 내용은 저장되어 있습니다.')) return;
+    try { await deleteDoc(doc(db, 'debate_sessions', this.sid, 'presence', this.me)); } catch {}
+    LS.del('me_' + this.sid); location.reload();
+  },
+  async enter() {
     const sid = this.sid;
+    const [v0, r0] = await Promise.all([getDoc(doc(db, 'debate_sessions', sid, 'votes', this.me)), getDoc(doc(db, 'debate_sessions', sid, 'reports', this.me))]);
+    this.myVote = v0.exists() ? v0.data() : null; this.myReport = r0.exists() ? r0.data() : null;
     this.unsub.push(onSnapshot(sref(sid), d => {
       this.s = d.data(); this.role = roleOf(this.s, this.me);
       if (this.s.stage !== this.lastStage) { this.lastStage = this.s.stage; this.render(); }
@@ -513,6 +522,7 @@ const Student = {
         <p class="mute">오늘의 ${esc(t.name)}</p><h2>${esc(s.title)}</h2>
         <div class="row" style="justify-content:center;margin:12px 0"><span class="badge pro">찬성: ${esc(s.proLabel || '')}</span><span class="badge con">반대: ${esc(s.conLabel || '')}</span></div>
         <p>나의 역할: ${this.roleBadge()}</p><p class="mute">선생님이 시작하면 화면이 자동으로 바뀝니다.</p></div>`;
+      if (r.side !== 'aud') body += this.preReportForm(true);
     } else if (st.type === 'pre') {
       if (r.side === 'aud') {
         const v = this.myVote?.pre;
@@ -523,9 +533,7 @@ const Student = {
           <p class="mute">질문은 제출할 때마다 따로 쌓입니다. ${v ? '· 투표 완료 (다시 제출하면 수정됩니다)' : ''}</p>
           <button style="width:100%" onclick="Student.submitPre()">제출</button></div>`;
       } else {
-        body = `<div class="card"><h3>사전 보고서</h3><p class="mute">우리 측의 핵심 논거, 근거 자료, 예상되는 상대측 반론과 대응을 정리하세요.</p>
-          <textarea id="preReport" style="min-height:220px">${esc(this.myReport?.pre || '')}</textarea>
-          <button style="width:100%;margin-top:10px" onclick="Student.saveReport('pre','preReport')">저장</button></div>`;
+        body = this.preReportForm(false);
       }
     } else if (st.type === 'debate') {
       body = '';
@@ -570,6 +578,25 @@ const Student = {
     app.innerHTML = this.header() + `<div class="wrap">${this.stageBar()}${body}</div>`;
     this.update(); this.updateFeeds();
     const ta = $('#recText'); if (ta) ta.onkeydown = e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) Student.addRec(); };
+  },
+  preReportForm(early) {
+    const rp = this.myReport || {}, done = !!rp.pre;
+    const side = this.role.side === 'pro' ? '찬성' : '반대';
+    return `<div class="card side-${this.role.side}"><div class="row"><h3 class="grow">사전 보고서 (${side} 측 · 개인)</h3>${done ? '<span class="badge gold">제출 완료 ✅</span>' : '<span class="badge">미제출</span>'}</div>
+      <p class="mute">${early ? '토론 전까지 미리 작성해 두세요. 같은 진영 친구와 의논은 해도 되지만, <b>보고서는 각자 자기 말로</b> 씁니다. 언제든 다시 들어와 고칠 수 있어요.'
+                         : (done ? '미리 제출한 보고서입니다. 토론 전에 한 번 더 읽어 보고, 필요하면 고치세요.' : '아직 제출하지 않았어요. 짧게라도 지금 작성하세요.')}</p>
+      <label>① 내가 맡을 핵심 주장</label><textarea id="prClaim" style="min-height:60px" placeholder="예: 16세는 정치적 판단을 내릴 수 있을 만큼 성숙했다">${esc(rp.claim || '')}</textarea>
+      <label>② 근거·자료 (출처 포함)</label><textarea id="prEvid" style="min-height:80px" placeholder="예: 해외 사례, 통계, 기사 등">${esc(rp.evidence || '')}</textarea>
+      <label>③ 예상되는 상대측 반론과 나의 대응</label><textarea id="prReb" style="min-height:80px">${esc(rp.rebuttal || '')}</textarea>
+      <button style="width:100%;margin-top:10px" onclick="Student.savePreReport()">${done ? '수정 저장' : '제출'}</button></div>`;
+  },
+  async savePreReport() {
+    const claim = $('#prClaim').value.trim(), evidence = $('#prEvid').value.trim(), rebuttal = $('#prReb').value.trim();
+    if (!claim) return toast('① 핵심 주장을 적어 주세요');
+    const pre = `핵심 주장: ${claim}\n근거·자료: ${evidence || '-'}\n예상 반론과 대응: ${rebuttal || '-'}`;
+    await setDoc(doc(db, 'debate_sessions', this.sid, 'reports', this.me), {claim, evidence, rebuttal, pre, preTs:Date.now()}, {merge:true});
+    this.myReport = {...(this.myReport || {}), claim, evidence, rebuttal, pre};
+    toast('저장했습니다 ✅'); this.render();
   },
   update() {
     const c = $('#caption');
@@ -663,13 +690,16 @@ const Board = {
     onSnapshot(query(collection(db, 'debate_sessions', sid, 'records'), orderBy('ts')), q => { this.records = q.docs.map(d => ({id:d.id, ...d.data()})); this.update(); });
     onSnapshot(collection(db, 'debate_sessions', sid, 'votes'), q => { this.votes = q.docs.map(d => ({no:d.id, ...d.data()})); this.update(); });
     onSnapshot(collection(db, 'debate_sessions', sid, 'questions'), q => { this.questions = q.docs.map(d => ({id:d.id, ...d.data()})).sort((a, b) => a.ts - b.ts); this.update(); });
+    onSnapshot(collection(db, 'debate_sessions', sid, 'reports'), q => { this.reports = Object.fromEntries(q.docs.map(d => [d.id, d.data()])); this.update(); });
     onSnapshot(collection(db, 'debate_sessions', sid, 'presence'), q => { this.presence = q.docs.map(d => ({no:d.id, ...d.data()})); this.update(); });
     setInterval(() => this.tick(), 250);
   },
   render() {
     const s = this.s, t = T(s);
     app.innerHTML = `<div class="board">
-      <div class="head"><span class="fmt">${esc(t.name)}</span><div class="topic">${esc(s.title)}</div>${s.date ? `<span style="opacity:.7">${esc(s.date)}</span>` : ''}</div>
+      <div class="head"><span class="fmt">${esc(t.name)}</span><div class="topic">${esc(s.title)}</div>${s.date ? `<span style="opacity:.7">${esc(s.date)}</span>` : ''}
+        <button class="ghost sm noprint" onclick="Board.fullscreen()" title="전체 화면">⛶</button>
+        ${IS_TEACHER ? `<button class="ghost sm noprint" onclick="Board.exit()">✕ 관리 화면</button>` : ''}</div>
       <div class="stagebar"><div class="stagename">${esc(stageName(s, s.stage))}</div><div class="timer" id="btimer"></div></div>
       <div class="main" id="bmain"></div>
       <div class="caption"><span class="who">${esc(t.mc)}</span><span id="bcap" class="grow"></span></div>
@@ -691,7 +721,7 @@ const Board = {
       <button class="ghost sm" onclick="Board.replay()">🔊 다시 읽기</button>
       <button class="ghost sm" id="vtoggle" onclick="Board.voiceToggle()">${TTS.on() ? '🔈 음성 끄기' : '🔇 음성 켜기'}</button>
       <span class="grow"></span>
-      <a class="mute" href="${location.pathname}#admin" onclick="setTimeout(()=>location.reload())">관리 화면</a>
+      <span class="mute" style="font-size:13px">진행 상태는 저장되어 있어 나갔다 와도 이어집니다</span>
     </div>`;
   },
   update() {
@@ -703,6 +733,7 @@ const Board = {
     if (st.type === 'lobby') {
       main.innerHTML = `<div class="big-qr" style="flex:1"><div class="qrbox" id="qr"></div>
         <div><div class="mute" style="font-size:20px">QR코드로 접속 후 학번 입력</div><div class="big-num">${this.presence.length}<span style="font-size:28px"> / ${(this.cls.students || []).length}명 접속</span></div>
+        <div class="mute" style="font-size:18px">토론자 사전 보고서 ${this.reportCount()} / ${(s.pro || []).length + (s.con || []).length}명 제출</div>
         <div class="row" style="margin-top:20px;font-size:20px"><span class="badge pro" style="font-size:18px">찬성: ${esc(s.proLabel || '')}</span><span class="badge con" style="font-size:18px">반대: ${esc(s.conLabel || '')}</span></div>
         <div style="margin-top:16px;font-size:18px"><b style="color:var(--pro)">${esc(t.pro)}</b> ${(s.pro || []).map(no => esc(nm[no]) + (s.proClerk === no ? '(서기)' : '')).join(', ')}<br><b style="color:var(--con)">${esc(t.con)}</b> ${(s.con || []).map(no => esc(nm[no]) + (s.conClerk === no ? '(서기)' : '')).join(', ')}</div></div></div>`;
       this.drawQR(280);
@@ -711,7 +742,7 @@ const Board = {
       main.innerHTML = `<div class="big-qr" style="flex:1"><div class="qrbox" id="qr"></div><div>
         <div class="mute" style="font-size:22px">${esc(t.aud)} ${st.type === 'pre' ? '사전' : '사후'} 투표 참여</div>
         <div class="big-num">${done}<span style="font-size:30px"> / ${aud.length}명</span></div>
-        ${st.type === 'pre' ? `<div class="mute" style="font-size:20px;margin-top:10px">사전 질문 ${this.questions.length}개 접수</div>` : ''}
+        ${st.type === 'pre' ? `<div class="mute" style="font-size:20px;margin-top:10px">사전 질문 ${this.questions.length}개 접수 · 토론자 사전 보고서 ${this.reportCount()} / ${(s.pro || []).length + (s.con || []).length}명 제출</div>` : ''}
         <div class="mute" style="font-size:18px;margin-top:14px">결과는 사후 투표가 끝난 뒤 공개됩니다.</div></div></div>`;
       this.drawQR(220);
     } else if (st.type === 'debate') {
@@ -736,6 +767,9 @@ const Board = {
         <div class="col"><h3>${esc(t.doc)}</h3>${s.verdict ? `<div class="verdict">${esc(s.verdict.full)}</div>` : `<p class="mute">${IS_TEACHER ? `아래 [${esc(t.doc)} 생성]을 누르세요.` : '작성 중…'}</p>`}</div></div>`;
     }
   },
+  reportCount() { return Object.values(this.reports || {}).filter(r => r.pre).length; },
+  exit() { TTS.stop(); location.href = location.pathname + '#admin'; setTimeout(() => location.reload(), 50); },
+  fullscreen() { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.(); },
   drawQR(size) {
     const el = $('#qr'); if (!el || !window.QRCode) return;
     el.innerHTML = ''; new QRCode(el, {text:studentUrl(this.sid), width:size, height:size});
@@ -950,10 +984,12 @@ const Admin = {
   },
   async activate(id) { await setDoc(doc(db, 'debate_meta', 'active'), {sid:id}); this.active = id; this.render(); toast('학생들이 이 토론으로 접속합니다'); },
   async openBoard(id) {
+    const w = window.open('', 'debate_board');   // 팝업 차단 방지: 클릭 직후 창부터 연다
     if (this.active !== id) await this.activate(id);
     const s = this.sessions.find(x => x.id === id);
     if (s.stage === 0 && !s.speech?.text) await updateDoc(sref(id), {speech:{text:script(s, 0), ts:Date.now()}});
-    location.href = location.pathname + '?s=' + id + '#board'; setTimeout(() => location.reload(), 50);
+    const url = location.pathname + '?s=' + id + '#board';
+    if (w) w.location.href = url; else location.href = url;
   },
   showQR(id) {
     const box = $('#qrbox');
