@@ -180,6 +180,47 @@ function toast(msg, ms = 2600) {
   document.body.appendChild(el); setTimeout(() => el.remove(), ms);
 }
 const STANCE = {pro:'찬성', con:'반대', neu:'중립'};
+/* 토론자 보고서 양식: [키, 제목, 안내, 형식(i=한 줄, t=여러 줄), 필수] / {h:'소제목'} */
+const REPORT1 = [
+  ['major', '관심 계열(전공)', '예: 사회계열 진학 희망 / 자연계열 진학 희망 / 융합인재 진로 희망 등', 'i', 1],
+  ['role', '본인이 맡은 역할', '예: 통계자료 담당 / 언론기사 담당 등', 'i', 1],
+  ['why', '이 주제·입장을 선택한 이유는 무엇인가요?', '전공 관련성, 사회적 관심, 개인적 문제의식 등 구체적으로 작성', 't', 1],
+  ['plan', '자료 조사 계획', '본인이 맡은 조사 항목을 어떤 방법으로 조사할 계획인지 서술하세요.', 't', 0],
+  {h:'본인이 직접 찾은 핵심 자료', d:'최소 2가지 이상을 출처와 함께 기록하세요. 팀원이 찾은 자료를 그대로 베끼지 않고 본인이 담당한 부분 위주로'},
+  ['src1', '자료 ① 자료/출처', '', 'i', 1], ['src1c', '자료 ① 조사한 내용', '', 't', 1],
+  ['src2', '자료 ② 자료/출처', '', 'i', 1], ['src2c', '자료 ② 조사한 내용', '', 't', 1],
+  ['contrib', '팀 논지 구성 중 본인이 기여한 부분', '팀 전체 논지는 공유하되, 본인이 제안했거나 담당한 근거·사례가 무엇인지 구체적으로 밝히세요.', 't', 1],
+  {h:'상대 진영 예상 논거 중, 본인이 조사한 부분', d:'담당한 범위 내에서 조사한 내용을 서술하세요.'},
+  ['oppArg', '예상 논거', '', 't', 0], ['oppWhy', '판단 근거', '', 't', 0],
+  {h:'본인이 준비한 반론 대응 논리', d:'팀이 나눈 예상 반론 중 본인이 맡은 부분의 재반박 논리를 서술하세요.'},
+  ['reb1', '예상 반론 ①', '', 't', 0], ['re1', '나의 재반박 ①', '', 't', 0],
+  ['reb2', '예상 반론 ②', '', 't', 0], ['re2', '나의 재반박 ②', '', 't', 0],
+  ['cross', '본인이 준비한 교차 질문', '', 't', 0],
+  ['expect', '토론 활동 중 자신의 예상 모습', '어떻게 기여할 것인가', 't', 0],
+];
+const REPORT2 = [
+  ['role', '본인이 맡은 역할', '예: 통계자료 담당 / 언론기사 담당 등', 'i', 1],
+  ['contrib', '팀 논지 구성 중 본인이 기여한 부분', '팀 전체 논지는 공유하되, 본인이 제안했거나 담당한 근거·사례가 무엇인지 구체적으로 밝히세요.', 't', 1],
+  ['change', '토론을 통해 입장의 변화가 있나요?', '변화가 없다면 어떤 입장이 확고해졌는지, 변화가 있다면 어떤 이유로 변화되었는지 작성해 주세요.', 't', 1],
+  ['career', '이 주제가 나의 진로와 어떤 연관이 있나요? 전공 이해에 어떤 영향을 주었나요?', '진로 방향, 관심도 변화, 사회 문제 해결 등', 't', 1],
+  ['growth', '이번 활동을 통해 발전한 나의 역량은 무엇이며, 다음에 보완하고 싶은 점은 무엇인가요?', '예: 논리적 사고, 자료조사, 발표력, 소통 능력 등', 't', 1],
+  ['team', '팀 협력 과정에서 본인의 기여와 느낀 점', '본인이 실제로 어떤 역할을 수행했는지, 팀원과 어떻게 소통·조율했는지, 어려웠던 점과 배운 점을 구체적으로 작성하세요.', 't', 1],
+  ['overall', '총평 및 앞으로 더 탐구해 보고 싶은 주제는 무엇인가요?', '', 't', 1],
+];
+const reportText = (form, d) => form.filter(f => Array.isArray(f) && (d?.[f[0]] || '').trim()).map(f => `${f[1]}: ${d[f[0]].trim()}`).join('\n');
+function reportFormHTML(form, d, pfx) {
+  return form.map(f => {
+    if (!Array.isArray(f)) return `<div style="margin-top:18px;padding-top:10px;border-top:1px dashed var(--line)"><b>${esc(f.h)}</b><div class="mute">${esc(f.d || '')}</div></div>`;
+    const [k, title, hint, type, req] = f, v = esc(d?.[k] || '');
+    return `<label>${esc(title)}${req ? ' <span style="color:var(--con)">*</span>' : ''}</label>${hint ? `<div class="mute" style="margin:-4px 0 6px">${esc(hint)}</div>` : ''}
+      ${type === 'i' ? `<input id="${pfx}_${k}" value="${v}">` : `<textarea id="${pfx}_${k}" style="min-height:80px">${v}</textarea>`}`;
+  }).join('');
+}
+function readForm(form, pfx) {
+  const d = {}; let missing = null;
+  form.forEach(f => { if (!Array.isArray(f)) return; const v = ($('#' + pfx + '_' + f[0])?.value || '').trim(); d[f[0]] = v; if (f[4] && !v && !missing) missing = f[1]; });
+  return {d, missing};
+}
 const fmtTime = sec => { const neg = sec < 0; sec = Math.abs(Math.round(sec)); return (neg ? '-' : '') + Math.floor(sec / 60) + ':' + String(sec % 60).padStart(2, '0'); };
 const params = new URLSearchParams(location.search);
 const route = (location.hash || '').replace('#', '') || 'student';
@@ -399,6 +440,7 @@ ${items}
 - 기록에 있는 사실만 사용하고, 과장하거나 기록에 없는 능력·성품을 추측하지 마라.
 - 주어("학생은", 이름) 없이 쓰고, 생활기록부 문체(~함, ~임, ~하였음 등 명사형·관찰형 종결)로 쓴다.
 - 맡은 역할(토론자/서기/청중)과 구체적 활동(주장 내용, 질문, 입장 변화와 그 이유, 보고서 내용)이 드러나게 쓴다.
+- 보고서에 관심 계열·진로 연관, 직접 조사한 자료, 발전한 역량이 있으면 구체적으로 반영한다.
 - 400~500자 내외의 한 문단.
 JSON으로만 답하라: {"roles":"역할별 활동 정리(개조식, 항목마다 줄바꿈 \\n)","draft":"특기사항 초안"}`;
 }
@@ -622,11 +664,11 @@ const Student = {
         body = `<div class="card" style="text-align:center;padding:30px"><h3>${esc(t.aud)} 투표 중입니다</h3><p class="mute">토론자는 투표하지 않습니다. 잠시 기다려 주세요.</p></div><div id="feeds"></div>`;
       }
     } else if (st.type === 'result') {
-      body = `<div id="verdictBox"></div>
-        <div class="card"><h3>사후 보고서</h3><p class="mute">토론을 통해 새롭게 알게 된 점, 생각의 변화, 우리 측(또는 양측) 논증의 강점과 아쉬운 점을 정리하세요.</p>
-          <textarea id="postReport" style="min-height:180px">${esc(this.myReport?.post || '')}</textarea>
+      body = `<div id="verdictBox"></div>` + (r.side !== 'aud' ? this.postReportForm() : `
+        <div class="card"><h3>${esc(t.aud)} 소감</h3><p class="mute">토론을 듣고 새롭게 알게 된 점, 생각의 변화, 양측 논증의 강점과 아쉬운 점을 정리하세요.</p>
+          <textarea id="postReport" style="min-height:160px">${esc(this.myReport?.post || '')}</textarea>
           <label>한 줄 느낀점</label><input id="reflection" value="${esc(this.myReport?.reflection || '')}">
-          <button style="width:100%;margin-top:10px" onclick="Student.savePost()">저장</button></div>`;
+          <button style="width:100%;margin-top:10px" onclick="Student.savePost()">저장</button></div>`);
     }
     app.innerHTML = this.header() + `<div class="wrap">${this.stageBar()}${body}</div>`;
     this.update(); this.updateFeeds();
@@ -635,21 +677,41 @@ const Student = {
   preReportForm(early) {
     const rp = this.myReport || {}, done = !!rp.pre;
     const side = this.role.side === 'pro' ? '찬성' : '반대';
-    return `<div class="card side-${this.role.side}"><div class="row"><h3 class="grow">사전 보고서 (${side} 측 · 개인)</h3>${done ? '<span class="badge gold">제출 완료 ✅</span>' : '<span class="badge">미제출</span>'}</div>
-      <p class="mute">${early ? '토론 전까지 미리 작성해 두세요. 같은 진영 친구와 의논은 해도 되지만, <b>보고서는 각자 자기 말로</b> 씁니다. 언제든 다시 들어와 고칠 수 있어요.'
-                         : (done ? '미리 제출한 보고서입니다. 토론 전에 한 번 더 읽어 보고, 필요하면 고치세요.' : '아직 제출하지 않았어요. 짧게라도 지금 작성하세요.')}</p>
-      <label>① 내가 맡을 핵심 주장</label><textarea id="prClaim" style="min-height:60px" placeholder="예: 16세는 정치적 판단을 내릴 수 있을 만큼 성숙했다">${esc(rp.claim || '')}</textarea>
-      <label>② 근거·자료 (출처 포함)</label><textarea id="prEvid" style="min-height:80px" placeholder="예: 해외 사례, 통계, 기사 등">${esc(rp.evidence || '')}</textarea>
-      <label>③ 예상되는 상대측 반론과 나의 대응</label><textarea id="prReb" style="min-height:80px">${esc(rp.rebuttal || '')}</textarea>
-      <button style="width:100%;margin-top:10px" onclick="Student.savePreReport()">${done ? '수정 저장' : '제출'}</button></div>`;
+    return `<div class="card side-${this.role.side}"><div class="row"><h3 class="grow">찬반 토론 보고서 · 1차: 토론 준비 및 전략 탐색</h3>${done ? '<span class="badge gold">제출 완료 ✅</span>' : '<span class="badge">미제출</span>'}</div>
+      <p class="mute">주제: ${esc(this.s.title)} · <b>${side}</b> · 학번·이름·날짜는 자동으로 기록됩니다.<br>
+      ${early ? '토론 전까지 미리 작성하세요. 같은 진영 친구와 의논은 해도 되지만 <b>보고서는 각자 자기 말로</b> 씁니다. 저장 후에도 언제든 고칠 수 있어요.'
+              : (done ? '미리 제출한 보고서입니다. 토론 전에 한 번 더 읽어 보세요.' : '아직 제출하지 않았어요.')}</p>
+      ${reportFormHTML(REPORT1, rp.r1, 'r1')}
+      <div class="row" style="margin-top:14px"><button class="ghost grow" onclick="Student.saveR1(true)">임시 저장</button><button class="grow" onclick="Student.saveR1(false)">${done ? '수정 제출' : '제출'}</button></div></div>`;
   },
-  async savePreReport() {
-    const claim = $('#prClaim').value.trim(), evidence = $('#prEvid').value.trim(), rebuttal = $('#prReb').value.trim();
-    if (!claim) return toast('① 핵심 주장을 적어 주세요');
-    const pre = `핵심 주장: ${claim}\n근거·자료: ${evidence || '-'}\n예상 반론과 대응: ${rebuttal || '-'}`;
-    await setDoc(doc(db, 'debate_sessions', this.sid, 'reports', this.me), {claim, evidence, rebuttal, pre, preTs:Date.now()}, {merge:true});
-    this.myReport = {...(this.myReport || {}), claim, evidence, rebuttal, pre};
-    toast('저장했습니다 ✅'); this.render();
+  async saveR1(draft) {
+    const {d, missing} = readForm(REPORT1, 'r1');
+    if (!draft && missing) return toast(`'${missing}' 항목을 작성하세요`);
+    const data = {r1:d, r1Ts:Date.now()};
+    if (!draft) data.pre = reportText(REPORT1, d);
+    await setDoc(doc(db, 'debate_sessions', this.sid, 'reports', this.me), data, {merge:true});
+    this.myReport = {...(this.myReport || {}), ...data};
+    toast(draft ? '임시 저장했습니다 (아직 제출 전)' : '제출했습니다 ✅'); if (!draft) this.render();
+  },
+  postReportForm() {
+    const rp = this.myReport || {}, done = !!rp.post;
+    const d = {...(rp.r2 || {})};
+    if (!d.role && rp.r1?.role) d.role = rp.r1.role;            // 1차 내용을 처음 값으로 채움
+    if (!d.contrib && rp.r1?.contrib) d.contrib = rp.r1.contrib;
+    return `<div class="card side-${this.role.side}"><div class="row"><h3 class="grow">찬반 토론 보고서 · 2차: 토론 마무리 입장 정리</h3>${done ? '<span class="badge gold">제출 완료 ✅</span>' : '<span class="badge">미제출</span>'}</div>
+      <p class="mute">역할과 기여 부분은 1차 보고서 내용으로 미리 채워 두었어요. 실제 토론에서 한 일에 맞게 고치세요.</p>
+      ${reportFormHTML(REPORT2, d, 'r2')}
+      <label>한 줄 느낀점</label><input id="reflection" value="${esc(rp.reflection || '')}">
+      <div class="row" style="margin-top:14px"><button class="ghost grow" onclick="Student.saveR2(true)">임시 저장</button><button class="grow" onclick="Student.saveR2(false)">${done ? '수정 제출' : '제출'}</button></div></div>`;
+  },
+  async saveR2(draft) {
+    const {d, missing} = readForm(REPORT2, 'r2');
+    if (!draft && missing) return toast(`'${missing}' 항목을 작성하세요`);
+    const data = {r2:d, r2Ts:Date.now(), reflection:$('#reflection').value.trim()};
+    if (!draft) { data.post = reportText(REPORT2, d); data.postTs = Date.now(); }
+    await setDoc(doc(db, 'debate_sessions', this.sid, 'reports', this.me), data, {merge:true});
+    this.myReport = {...(this.myReport || {}), ...data};
+    toast(draft ? '임시 저장했습니다 (아직 제출 전)' : '제출했습니다 ✅'); if (!draft) this.render();
   },
   update() {
     const c = $('#caption');
@@ -1084,7 +1146,8 @@ const Admin = {
     }).join('');
     const roleTxt = no => { const r = roleOf(s, no); return r.side === 'aud' ? t.aud : (r.side === 'pro' ? '찬성' : '반대') + (r.clerk ? '(서기)' : ''); };
     const vm = Object.fromEntries(b.votes.map(v => [v.no, v]));
-    $('#rbody').innerHTML = `<div class="card"><h2>${esc(s.title)}</h2><p class="mute">${esc(t.name)} · ${esc(s.date || '')} · ${esc(cls.year + ' ' + cls.name)}</p>
+    this.printData = {s, cls, b};
+    $('#rbody').innerHTML = `<div class="card"><div class="row noprint" style="justify-content:flex-end"><button class="ghost sm" onclick="Admin.printReports(1)">📄 1차 보고서 인쇄</button><button class="ghost sm" onclick="Admin.printReports(2)">📄 2차 보고서 인쇄</button></div><h2>${esc(s.title)}</h2><p class="mute">${esc(t.name)} · ${esc(s.date || '')} · ${esc(cls.year + ' ' + cls.name)}</p>
       <p><b style="color:var(--pro)">${t.pro}</b> ${(s.pro || []).map(no => esc(nm[no])).join(', ')}<br><b style="color:var(--con)">${t.con}</b> ${(s.con || []).map(no => esc(nm[no])).join(', ')}</p></div>
       <div class="card"><h3>투표 결과</h3>${barsHTML(stt)}<p><b>${esc(winnerText(s, stt))}</b></p><p class="mute">${Object.entries(stt.moves).map(([k, v]) => `${k}: ${v}명`).join(' · ') || '입장 이동 없음'}</p></div>
       ${s.verdict ? `<div class="card"><h3>${t.doc}</h3><div class="prewrap">${esc(s.verdict.full)}</div></div>` : ''}
@@ -1097,6 +1160,30 @@ const Admin = {
         <td>${v?.post ? `<b>${STANCE[v.post.stance]}</b> ${esc(v.post.reason)}${v.post.changeReason ? '<br><span class="mute">변화: ' + esc(v.post.changeReason) + '</span>' : ''}` : ''}</td>
         <td>${rp?.pre ? '<div><span class="mute">사전:</span> ' + esc(String(rp.pre)) + '</div>' : ''}${rp?.post ? '<div><span class="mute">사후:</span> ' + esc(String(rp.post)) + '</div>' : ''}${rp?.reflection ? '<div><span class="mute">느낀점:</span> ' + esc(rp.reflection) + '</div>' : ''}</td></tr>`; }).join('')}
       </table></div></div>`;
+  },
+  printReports(n) {
+    const {s, cls, b} = this.printData, form = n === 1 ? REPORT1 : REPORT2, key = n === 1 ? 'r1' : 'r2', tsKey = n === 1 ? 'r1Ts' : 'r2Ts';
+    const title = n === 1 ? '1차: 토론 준비 및 전략 탐색' : '2차: 토론 마무리 입장 정리';
+    const nm = nameMap(cls);
+    const pages = [...(s.pro || []), ...(s.con || [])].map(no => {
+      const rp = b.reports[no] || {}, d = rp[key] || {}, side = (s.pro || []).includes(no) ? '찬성' : '반대';
+      const dt = rp[tsKey] ? new Date(rp[tsKey]) : null;
+      const rows = form.map(f => Array.isArray(f)
+        ? `<tr><th>${esc(f[1])}${f[2] ? `<div class="h">(${esc(f[2])})</div>` : ''}</th><td>${esc(d[f[0]] || '')}</td></tr>`
+        : `<tr><th colspan="2" class="sec">${esc(f.h)}<div class="h">(${esc(f.d || '')})</div></th></tr>`).join('');
+      return `<section><h1>&lt;2학기 찬반 토론 보고서&gt;</h1>
+        <table><tr><th>주제</th><td>${title}</td><th style="width:70px">일시</th><td style="width:140px">${dt ? dt.getFullYear() + '. ' + (dt.getMonth() + 1) + '. ' + dt.getDate() + '.' : ''}</td></tr>
+        <tr><th>학번</th><td>${esc(no)}</td><th>이름</th><td>${esc(nm[no] || '')}</td></tr>
+        <tr><th>토론 주제</th><td colspan="3">${esc(s.title)}</td></tr><tr><th>찬성/반대</th><td colspan="3">${side}</td></tr></table>
+        <table style="margin-top:-1px">${rows}${n === 2 && rp.reflection ? `<tr><th>한 줄 느낀점</th><td>${esc(rp.reflection)}</td></tr>` : ''}</table></section>`;
+    }).join('');
+    const w = window.open('', '_blank');
+    w.document.write(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${esc(s.title)} ${n}차 보고서</title>
+      <style>body{font-family:"Malgun Gothic",sans-serif;margin:0;color:#111}section{padding:14mm 12mm;page-break-after:always}h1{text-align:center;font-size:20px;margin:0 0 10px}
+      table{width:100%;border-collapse:collapse;font-size:12.5px}th,td{border:1px solid #333;padding:6px 8px;vertical-align:top;text-align:left}
+      th{background:#f1f2f4;width:34%;font-weight:700}th.sec{background:#e4e6ea;width:auto}.h{font-weight:400;font-size:11px;color:#555;margin-top:2px}td{white-space:pre-wrap}
+      @media screen{body{background:#ddd}section{background:#fff;max-width:210mm;margin:10px auto}}</style></head><body>${pages}<script>window.onload=()=>window.print()<\/script></body></html>`);
+    w.document.close();
   },
   /* ---------- 생기부 ---------- */
   async renderRecord(body) {
