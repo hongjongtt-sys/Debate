@@ -124,14 +124,16 @@ const STAGES = [
   {key:'pre',       name:'사전 투표',            type:'pre',    min:0},
   {key:'pro_open',  name:'찬성 측 입장 발표',      type:'debate', min:3},
   {key:'con_open',  name:'반대 측 입장 발표',      type:'debate', min:3},
-  {key:'cross1',    name:'교차 질의 ① 찬성 질문 → 반대 응답·반론', type:'debate', min:10},
-  {key:'cross2',    name:'교차 질의 ② 반대 질문 → 찬성 응답·반론', type:'debate', min:10},
-  {key:'audience',  name:'청중 질문 및 응답',      type:'debate', min:5},
+  {key:'cross1',    name:'교차 질의 ① 찬성 질문 → 반대 응답·반론', type:'debate', min:8},
+  {key:'cross2',    name:'교차 질의 ② 반대 질문 → 찬성 응답·반론', type:'debate', min:8},
+  {key:'ready',     name:'마무리 준비 (양 진영)',   type:'ready',  min:1},
   {key:'pro_close', name:'찬성 측 마무리 발언',    type:'debate', min:2},
   {key:'con_close', name:'반대 측 마무리 발언',    type:'debate', min:2},
-  {key:'post',      name:'사후 투표',            type:'post',   min:3},
+  {key:'audience',  name:'청중 질문 및 응답',      type:'debate', min:5},
+  {key:'post',      name:'사후 투표',            type:'post',   min:2},
   {key:'result',    name:'판정 발표',            type:'result', min:2},
 ];
+const BEFORE_READY = ['pro_open', 'con_open', 'cross1', 'cross2'];
 const TERMS = {
   debate:{name:'찬반토론', mc:'사회자', aud:'청중', pro:'찬성 측', con:'반대 측', doc:'판정문'},
   court: {name:'모의법정', mc:'재판장', aud:'재판관', pro:'찬성 측 대리인', con:'반대 측 대리인', doc:'결정문'},
@@ -156,9 +158,10 @@ function script(s, i) {
     case 'con_open': return `다음은 ${t.con}의 입장 발표입니다. 핵심 논지와 근거를 제시해 주십시오. 시간은 ${st.min}분입니다.`;
     case 'cross1': return `교차 질의 첫 번째 순서입니다. ${t.pro}이 먼저 질문하고, ${t.con}이 응답과 반론을 하겠습니다. 시간은 ${st.min}분입니다.`;
     case 'cross2': return `교차 질의 두 번째 순서입니다. 이번에는 ${t.con}이 먼저 질문하고, ${t.pro}이 응답과 반론을 하겠습니다. 시간은 ${st.min}분입니다.`;
-    case 'audience': return `이제 ${t.aud} 질문 시간입니다. 선정된 질문에 양측이 답변해 주십시오. 시간은 ${st.min}분입니다.`;
-    case 'pro_close': return `${t.pro}의 마무리 발언입니다. 입장을 요약하고 다시 강조해 주십시오. 시간은 ${st.min}분입니다.`;
-    case 'con_close': return `마지막으로 ${t.con}의 마무리 발언입니다. 입장을 요약하고 다시 강조해 주십시오. 시간은 ${st.min}분입니다.`;
+    case 'ready': return `교차 질의를 마치겠습니다. 양측은 ${st.min}분 동안 화면의 쟁점 정리를 참고해 내용을 정리하고, 마무리 발언을 준비해 주십시오.`;
+    case 'pro_close': return `이제 마무리 발언 순서입니다. ${t.pro}부터 입장을 요약하고 다시 강조해 주십시오. 시간은 ${st.min}분입니다.`;
+    case 'con_close': return `다음은 ${t.con}의 마무리 발언입니다. 입장을 요약하고 다시 강조해 주십시오. 시간은 ${st.min}분입니다.`;
+    case 'audience': return `마지막으로 ${t.aud} 질문 시간입니다. 선정된 질문에 양측이 답변해 주십시오. 시간은 ${st.min}분입니다.`;
     case 'post': return court ? `이상으로 변론을 종결하겠습니다. 재판관 여러분은 평의에 들어가 사후 투표를 해 주십시오. 화면에서 사전 투표 때의 내 입장을 확인할 수 있습니다.`
                               : `이상으로 토론을 마치겠습니다. ${t.aud} 여러분은 사후 투표를 해 주십시오. 화면에서 사전 투표 때의 내 입장을 확인할 수 있습니다.`;
     case 'result': return court ? `평의 결과를 바탕으로 결정을 선고하겠습니다.` : `투표 결과와 판정을 발표하겠습니다.`;
@@ -392,6 +395,76 @@ ${recLines(s, recs, 'con')}
 3) 법조문, 판례, 통계 등 기록에 없는 사실을 만들어 내지 마라.
 JSON으로만 답하라: {"pro":["..."],"con":["..."],"judge":"..."}`;
 }
+function overviewPrompt(s, recs) {
+  const t = T(s), L = anonLabel(s);
+  const body = BEFORE_READY.map(k => {
+    const i = STAGES.findIndex(x => x.key === k), r = recs.filter(y => y.stage === k);
+    return r.length ? `[${stageName(s, i)}]\n` + r.map(y => `${y.side === 'pro' ? '찬성' : '반대'}(${y.speaker ? L(y.speaker) : '-'}): ${y.text}`).join('\n') : '';
+  }).filter(Boolean).join('\n\n');
+  return `너는 고등학교 학급 ${t.name}의 ${t.mc}를 돕는 AI다. 주제: 「${s.title}」
+아래는 입장 발표와 교차 질의 동안 양측 서기가 남긴 기록이다. 양측이 마무리 발언을 준비하고 ${t.aud}이 흐름을 이해하도록 지금까지의 쟁점을 정리하라.
+
+${body || '(기록 없음)'}
+
+지시:
+- pro: 찬성 측이 지금까지 내세운 핵심 논거 2~4개 (짧은 한 문장씩)
+- con: 반대 측이 지금까지 내세운 핵심 논거 2~4개
+- open: 아직 충분히 답변되지 않았거나 양측이 맞서고 있는 쟁점 1~3개
+- 기록에 없는 내용, 법조문, 판례, 통계를 만들어 내지 마라. 학생 이름은 쓰지 마라.
+JSON으로만 답하라: {"pro":["..."],"con":["..."],"open":["..."]}`;
+}
+/* ---------- 내보내기 (API가 안 될 때 직접 AI에 붙여 넣기용) ---------- */
+function copyText(text) {
+  const ok = () => toast('복사했습니다. Gemini나 Claude 채팅창에 붙여 넣으세요 📋');
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(text).then(ok, () => fallback());
+  fallback();
+  function fallback() { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); ta.remove(); ok(); }
+}
+function downloadText(name, text) {
+  const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], {type:'text/plain;charset=utf-8'}));
+  a.download = name.replace(/[\\/:*?"<>|]/g, '_') + '.txt'; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+const toChat = (prompt, how) => prompt.replace(/JSON으로만 답하라[\s\S]*$/, how);
+function fullRecordText(s, cls, b, anon) {
+  const t = T(s), nm = nameMap(cls), L = anonLabel(s);
+  const audNos = (cls.students || []).map(x => x.no).filter(no => roleOf(s, no).side === 'aud');
+  const who = no => !no ? '-' : anon ? (roleOf(s, no).side === 'aud' ? '청중' + (audNos.indexOf(no) + 1) : L(no)) : (nm[no] || no);
+  const out = [];
+  out.push(`[${t.name} 기록] 주제: 「${s.title}」 / 날짜: ${s.date || '-'}`);
+  out.push(`찬성 측 관점: ${s.proLabel || '-'} / 반대 측 관점: ${s.conLabel || '-'}`);
+  out.push(`찬성 측: ${(s.pro || []).map(no => who(no) + (s.proClerk === no ? '(서기)' : '')).join(', ')}`);
+  out.push(`반대 측: ${(s.con || []).map(no => who(no) + (s.conClerk === no ? '(서기)' : '')).join(', ')}`);
+  if ((s.references || '').trim()) out.push(`\n[참고 자료]\n${s.references.trim()}`);
+  STAGES.forEach((x, i) => {
+    if (x.type !== 'debate') return;
+    const rs = b.records.filter(r => r.stage === x.key), a = s.ai?.[x.key];
+    if (!rs.length && !a) return;
+    out.push(`\n■ ${stageName(s, i)}`);
+    rs.forEach(r => out.push(`- ${anon && r.speaker ? '' : (r.side === 'pro' ? '찬성 ' : '반대 ')}${who(r.speaker)}: ${r.text}`));
+    if (a) out.push(`  (AI 정리) 찬성: ${(a.pro || []).join(' / ')} | 반대: ${(a.con || []).join(' / ')}`);
+    if (x.key === 'audience' && b.questions.length) b.questions.forEach(q => out.push(`  · 청중 질문(${who(q.no)}): ${q.text}`));
+  });
+  if (s.overview) out.push(`\n■ 쟁점 정리\n` + (s.overview.manual || `찬성: ${(s.overview.pro || []).join(' / ')}\n반대: ${(s.overview.con || []).join(' / ')}\n남은 쟁점: ${(s.overview.open || []).join(' / ')}`));
+  const stt = voteStats(s, b.votes, cls);
+  out.push(`\n■ 투표 결과\n사전: 찬성 ${stt.pre.pro} / 반대 ${stt.pre.con} / 중립 ${stt.pre.neu}\n사후: 찬성 ${stt.post.pro} / 반대 ${stt.post.con} / 중립 ${stt.post.neu}\n${winnerText(s, stt)}`);
+  b.votes.filter(v => roleOf(s, v.no).side === 'aud').forEach(v => out.push(`- ${who(v.no)}: 사전 ${v.pre ? STANCE[v.pre.stance] + '(' + v.pre.reason + ')' : '없음'} → 사후 ${v.post ? STANCE[v.post.stance] + '(' + v.post.reason + (v.post.changeReason ? ' / 변화 이유: ' + v.post.changeReason : '') + ')' : '없음'}`));
+  [...(s.pro || []), ...(s.con || [])].forEach(no => {
+    const rp = b.reports[no]; if (!rp) return;
+    if (rp.pre) out.push(`\n■ ${who(no)} 1차 보고서\n${rp.pre}`);
+    if (rp.post) out.push(`\n■ ${who(no)} 2차 보고서\n${rp.post}${rp.reflection ? '\n한 줄 느낀점: ' + rp.reflection : ''}`);
+  });
+  if (s.verdict?.full) out.push(`\n■ ${t.doc}\n${s.verdict.full}`);
+  return out.join('\n');
+}
+function overviewHTML(s, compact) {
+  const o = s.overview, t = T(s);
+  if (!o) return `<div class="ai">🤖 지금까지의 쟁점을 정리하는 중…</div>`;
+  if (o.manual) return `<div class="ai prewrap" ${compact ? 'style="font-size:17px"' : ''}><b>📝 지금까지의 쟁점 정리</b>\n${esc(o.manual)}</div>`;
+  const ul = a => `<ul>${(a || []).map(x => `<li>${esc(x)}</li>`).join('') || '<li>-</li>'}</ul>`;
+  return `<div class="ai" ${compact ? 'style="font-size:17px"' : ''}><b>🤖 지금까지의 쟁점 정리</b>
+    <div class="two" style="margin-top:6px"><div><b style="color:var(--pro)">${esc(t.pro)} 핵심</b>${ul(o.pro)}</div><div><b style="color:var(--con)">${esc(t.con)} 핵심</b>${ul(o.con)}</div></div>
+    <div><b>⚖️ 남은 쟁점</b>${ul(o.open)}</div></div>`;
+}
 function verdictPrompt(s, bundle, st) {
   const t = T(s), court = s.format === 'court';
   const L = anonLabel(s);
@@ -421,6 +494,7 @@ function verdictPrompt(s, bundle, st) {
 [토론 기록]
 ${stagesText || '(기록 없음)'}
 
+${s.overview ? `[교차 질의까지의 쟁점 정리]\n찬성: ${(s.overview.pro || []).join(' / ')}\n반대: ${(s.overview.con || []).join(' / ')}\n남은 쟁점: ${(s.overview.open || []).join(' / ')}\n` : ''}
 [${t.aud} 사후 투표 이유]
 ${reasons}
 
@@ -646,6 +720,8 @@ const Student = {
         body += `<div class="card"><h3>질문 보내기</h3><textarea id="question" style="min-height:60px"></textarea><button style="width:100%;margin-top:8px" onclick="Student.sendQ()">보내기</button></div>`;
       }
       body += `<div id="feeds"></div>`;
+    } else if (st.type === 'ready') {
+      body = `<div id="feeds"></div>`;
     } else if (st.type === 'post') {
       if (r.side === 'aud') {
         const pv = this.myVote?.pre, v = this.myVote?.post;
@@ -715,7 +791,8 @@ const Student = {
   },
   update() {
     const c = $('#caption');
-    if (c) c.innerHTML = this.s.speech?.text ? `<div class="ai" style="margin-bottom:14px"><b>${esc(T(this.s).mc)}</b> ${esc(this.s.speech.text)}</div>` : '';
+    if (c) c.innerHTML = (this.s.status === 'done' ? `<div class="card" style="border:2px solid var(--gold)"><b>🏁 토론이 종료되었습니다.</b> ${this.role?.side === 'aud' ? '아래에 소감을 작성하세요.' : '아래에 2차 보고서를 작성하세요.'}</div>` : '')
+      + (this.s.speech?.text ? `<div class="ai" style="margin-bottom:14px"><b>${esc(T(this.s).mc)}</b> ${esc(this.s.speech.text)}</div>` : '');
     const vb = $('#verdictBox');
     if (vb) vb.innerHTML = this.s.verdict ? `<div class="card"><h3>${esc(T(this.s).doc)}</h3><p><b>${esc(this.s.verdict.winnerText || '')}</b></p>${this.s.verdict.statsHTML || ''}<div class="prewrap" style="margin-top:12px">${esc(this.s.verdict.full)}</div></div>` : `<div class="card mute">${esc(T(this.s).doc)}을 기다리는 중입니다…</div>`;
     this.updateFeeds();
@@ -739,7 +816,8 @@ const Student = {
       }).reverse().join('');
       return `<div class="card side-${side}"><h3 style="color:var(--${side})">${esc(side === 'pro' ? t.pro : t.con)}</h3>${byStage || '<p class="mute">아직 기록이 없습니다.</p>'}</div>`;
     };
-    box.innerHTML = `<div class="two">${col('pro')}${col('con')}</div>`;
+    const showOv = s.stage >= STAGES.findIndex(x => x.key === 'ready');
+    box.innerHTML = (showOv ? `<div class="card">${overviewHTML(s)}</div>` : '') + `<div class="two">${col('pro')}${col('con')}</div>`;
   },
   pick(btn) { document.querySelectorAll('#stance button').forEach(b => b.classList.toggle('on', b === btn)); },
   picked() { return document.querySelector('#stance button.on')?.dataset.k; },
@@ -830,8 +908,9 @@ const Board = {
       <span class="sep"></span>
       ${st.min > 0 ? `<button class="ghost sm" id="tbtn" onclick="Board.timerToggle()">${this.s.timer?.running ? '⏸ 일시정지' : '▶ 타이머 시작'}</button>
       <button class="ghost sm" onclick="Board.timerAdd(60)">+1분</button><button class="ghost sm" onclick="Board.timerAdd(-60)">-1분</button><button class="ghost sm" onclick="Board.timerReset()">↺</button><span class="sep"></span>` : ''}
-      ${st.type === 'debate' ? `<button class="gold sm" id="aibtn" onclick="Board.aiStage()">🤖 이 단계 AI 정리</button>` : ''}
-      ${st.type === 'result' || st.type === 'post' ? `<button class="gold sm" id="vbtn" onclick="Board.makeVerdict()">🤖 ${esc(T(this.s).doc)} 생성</button>` : ''}
+      ${st.type === 'result' ? `<button class="ghost sm" id="vbtn" onclick="Board.makeVerdict()">🤖 ${esc(T(this.s).doc)} 다시 생성</button>
+        <button class="con sm" onclick="Board.endDebate()">🏁 토론 종료</button>` : ''}
+      <span id="failbox" class="row" style="gap:6px"></span>
       <span class="sep"></span>
       <button class="ghost sm" onclick="Board.replay()">🔊 다시 읽기</button>
       <button class="ghost sm" id="vtoggle" onclick="Board.voiceToggle()">${TTS.on() ? '🔈 음성 끄기' : '🔇 음성 켜기'}</button>
@@ -852,7 +931,17 @@ const Board = {
         <div class="row" style="margin-top:20px;font-size:20px"><span class="badge pro" style="font-size:18px">찬성: ${esc(s.proLabel || '')}</span><span class="badge con" style="font-size:18px">반대: ${esc(s.conLabel || '')}</span></div>
         <div style="margin-top:16px;font-size:18px"><b style="color:var(--pro)">${esc(t.pro)}</b> ${(s.pro || []).map(no => esc(nm[no]) + (s.proClerk === no ? '(서기)' : '')).join(', ')}<br><b style="color:var(--con)">${esc(t.con)}</b> ${(s.con || []).map(no => esc(nm[no]) + (s.conClerk === no ? '(서기)' : '')).join(', ')}</div></div></div>`;
       this.drawQR(280);
-    } else if (st.type === 'pre' || st.type === 'post') {
+    } else if (st.type === 'post') {
+      const done = this.votes.filter(v => v.post && roleOf(s, v.no).side === 'aud').length;
+      main.innerHTML = `<div style="flex:1;display:flex;align-items:center;justify-content:center;gap:50px;position:relative">
+        <div style="text-align:center"><div class="mute" style="font-size:26px">${esc(t.aud)} 사후 투표 참여</div>
+        <div class="big-num" style="font-size:120px">${done}<span style="font-size:40px"> / ${aud.length}명</span></div>
+        <div class="mute" style="font-size:20px;margin-top:10px">접속해 있는 학생은 화면이 자동으로 투표 화면으로 바뀝니다. 결과는 판정 발표 때 공개됩니다.</div></div>
+        <div style="position:absolute;right:0;bottom:0;text-align:center"><div class="qrbox" id="qr" style="padding:8px"></div><div class="mute" style="font-size:13px">다시 접속용</div></div></div>`;
+      this.drawQR(110);
+    } else if (st.type === 'ready') {
+      main.innerHTML = `<div class="col" style="font-size:24px">${overviewHTML(s)}</div>`;
+    } else if (st.type === 'pre') {
       const k = st.type, done = this.votes.filter(v => v[k] && roleOf(s, v.no).side === 'aud').length;
       main.innerHTML = `<div class="big-qr" style="flex:1"><div class="qrbox" id="qr"></div><div>
         <div class="mute" style="font-size:22px">${esc(t.aud)} ${st.type === 'pre' ? '사전' : '사후'} 투표 참여</div>
@@ -873,14 +962,23 @@ const Board = {
         qhtml = `<div class="col"><h3>${esc(t.aud)} 질문 ${IS_TEACHER ? '<span class="mute" style="font-size:16px">눌러서 선정·낭독</span>' : ''}</h3><div class="feed">${
           this.questions.map(q => `<div class="qitem ${IS_TEACHER ? 'click' : ''} ${s.spotQ === q.id ? 'on' : ''}" ${IS_TEACHER ? `onclick="Board.spot('${q.id}')"` : ''}>${esc(q.text)} <span class="mute" style="font-size:15px">- ${esc(nm[q.no] || '')}</span></div>`).join('') || '<p class="mute">질문이 없습니다.</p>'}</div></div>`;
       }
-      main.innerHTML = qhtml + `<div class="two" style="grid-template-columns:1fr 1fr">${col('pro')}${col('con')}</div>`;
+      if (st.key === 'pro_close' || st.key === 'con_close') {
+        const col2 = side => {
+          const rs = this.records.filter(x => x.side === side && (x.stage === 'pro_close' || x.stage === 'con_close')).slice(-6);
+          return `<div class="col side-${side}"><h3 style="color:var(--${side})">${esc(side === 'pro' ? t.pro : t.con)} 마무리 발언</h3>${rs.length ? `<div class="feed">${rs.map(y => `<div class="rec"><span class="who">${esc(nm[y.speaker] || '')}</span>${esc(y.text)}</div>`).join('')}</div>` : '<p class="mute">서기 기록을 기다리는 중…</p>'}</div>`;
+        };
+        main.innerHTML = `<div class="col" style="min-height:0;padding:12px 16px">${overviewHTML(s, true)}</div><div class="two" style="grid-template-columns:1fr 1fr">${col2('pro')}${col2('con')}</div>`;
+      } else main.innerHTML = qhtml + `<div class="two" style="grid-template-columns:1fr 1fr">${col('pro')}${col('con')}</div>`;
     } else if (st.type === 'result') {
       const stt = voteStats(s, this.votes, this.cls);
       main.innerHTML = `<div class="two" style="grid-template-columns:1fr 1.6fr">
         <div class="col"><h3>투표 결과</h3>${barsHTML(stt)}<p style="font-size:22px;margin-top:16px"><b>${esc(winnerText(s, stt))}</b></p>
           <div class="mute" style="font-size:17px">${Object.entries(stt.moves).map(([k, v]) => `${k}: ${v}명`).join('<br>') || '입장 이동 없음'}</div></div>
-        <div class="col"><h3>${esc(t.doc)}</h3>${s.verdict ? `<div class="verdict">${esc(s.verdict.full)}</div>` : `<p class="mute">${IS_TEACHER ? `아래 [${esc(t.doc)} 생성]을 누르세요.` : '작성 중…'}</p>`}</div></div>`;
+        <div class="col"><h3>${esc(t.doc)}</h3>${s.verdict ? `<div class="verdict">${esc(s.verdict.full)}</div>` : `<p class="mute">🤖 ${esc(t.doc)}을 작성하는 중입니다… (10~20초)</p>`}</div></div>`;
     }
+    const fb = $('#failbox');
+    if (fb) fb.innerHTML = Object.entries(s.aiFail || {}).filter(([, v]) => v).map(([k]) =>
+      `<button class="gold sm" title="계속 실패하면 관리 화면 → 기록·결과에서 직접 입력할 수 있습니다" onclick="Board.retry('${k}')">⚠ ${esc(k === 'overview' ? '쟁점 정리' : k === 'verdict' ? T(s).doc : stageName(s, STAGES.findIndex(x => x.key === k)))} 다시 만들기</button>`).join('');
   },
   reportCount() { return Object.values(this.reports || {}).filter(r => r.pre).length; },
   exit() { TTS.stop(); location.href = location.pathname + '#admin'; setTimeout(() => location.reload(), 50); },
@@ -902,10 +1000,41 @@ const Board = {
     try { const c = new AudioContext(); [0, .35, .7].forEach(d => { const o = c.createOscillator(), g = c.createGain(); o.frequency.value = 880; o.connect(g); g.connect(c.destination); g.gain.value = .15; o.start(c.currentTime + d); o.stop(c.currentTime + d + .2); }); } catch {}
   },
   async go(dir) {
-    const i = Math.max(0, Math.min(STAGES.length - 1, this.s.stage + dir));
-    const st = STAGES[i], sec = st.min * 60, run = st.type === 'debate';
+    const from = this.s.stage;
+    const i = Math.max(0, Math.min(STAGES.length - 1, from + dir));
+    const st = STAGES[i], sec = st.min * 60, run = ['debate', 'ready', 'post'].includes(st.type);
     TTS.stop();
     await updateDoc(sref(this.sid), {stage:i, timer:{running:run, endsAt:run ? Date.now() + sec * 1000 : null, remaining:sec}, speech:{text:script(this.s, i), ts:Date.now()}, spotQ:null});
+    if (dir !== 1 || !IS_TEACHER) return;
+    // 끝난 단계는 뒤에서 자동 정리 (낭독 없음)
+    if (STAGES[from].type === 'debate') this.summarize(STAGES[from].key);
+    if (st.type === 'ready') this.makeOverview();
+    if (st.type === 'result') setTimeout(() => this.makeVerdict(), 6000);   // 판정 멘트를 먼저 읽고 판정문 생성
+  },
+  async summarize(key) {
+    const idx = STAGES.findIndex(x => x.key === key);
+    const recs = this.records.filter(x => x.stage === key);
+    if (!recs.length) return;
+    try {
+      const out = await gemini(stagePrompt(this.s, idx, recs));
+      await updateDoc(sref(this.sid), {[`ai.${key}`]:{pro:out.pro || [], con:out.con || [], judge:out.judge || '', ts:Date.now()}, [`aiFail.${key}`]:false});
+    } catch (e) { await updateDoc(sref(this.sid), {[`aiFail.${key}`]:true}); toast(`${stageName(this.s, idx)} 정리 실패: ${e.message}`, 5000); }
+  },
+  async makeOverview() {
+    const recs = this.records.filter(x => BEFORE_READY.includes(x.stage));
+    if (!recs.length) { await updateDoc(sref(this.sid), {overview:{pro:[], con:[], open:['서기 기록이 없어 쟁점을 정리하지 못했습니다.'], ts:Date.now()}}); return; }
+    try {
+      const out = await gemini(overviewPrompt(this.s, recs));
+      await updateDoc(sref(this.sid), {overview:{pro:out.pro || [], con:out.con || [], open:out.open || [], ts:Date.now()}, 'aiFail.overview':false});
+    } catch (e) { await updateDoc(sref(this.sid), {'aiFail.overview':true}); toast('쟁점 정리 실패: ' + e.message, 5000); }
+  },
+  retry(key) { if (key === 'overview') this.makeOverview(); else if (key === 'verdict') this.makeVerdict(); else this.summarize(key); },
+  async endDebate() {
+    if (!confirm('토론을 종료할까요? 학생 화면에서는 "지난 토론"으로 옮겨지고, 보고서·소감은 계속 작성할 수 있습니다.')) return;
+    await updateDoc(sref(this.sid), {status:'done', speech:{text:`이상으로 모든 순서를 마치겠습니다. 토론자 여러분은 2차 보고서를, ${T(this.s).aud} 여러분은 소감을 작성해 주십시오. 수고하셨습니다.`, ts:Date.now()}});
+    const a = await getDoc(doc(db, 'debate_meta', 'active'));
+    if (a.exists() && a.data().sid === this.sid) await deleteDoc(doc(db, 'debate_meta', 'active'));
+    toast('토론을 종료했습니다. 낭독이 끝나면 ✕ 관리 화면을 누르세요.', 6000);
   },
   async timerToggle() {
     const t = this.s.timer || {}, r = timerRemain(this.s);
@@ -922,18 +1051,6 @@ const Board = {
     const q = this.questions.find(x => x.id === qid); if (!q) return;
     await updateDoc(sref(this.sid), {spotQ:qid, speech:{text:`${T(this.s).aud} 질문입니다. ${q.text}`, ts:Date.now()}});
   },
-  async aiStage() {
-    if (this.busy) return; this.busy = true;
-    const btn = $('#aibtn'); if (btn) { btn.disabled = true; btn.textContent = '🤖 정리 중…'; }
-    try {
-      const idx = this.s.stage, st = STAGES[idx];
-      const recs = this.records.filter(x => x.stage === st.key);
-      if (!recs.length) throw new Error('이 단계의 서기 기록이 없습니다.');
-      const out = await gemini(stagePrompt(this.s, idx, recs));
-      await updateDoc(sref(this.sid), {[`ai.${st.key}`]:{pro:out.pro || [], con:out.con || [], judge:out.judge || '', ts:Date.now()}, speech:{text:out.judge || '', ts:Date.now()}});
-    } catch (e) { toast(e.message, 5000); }
-    this.busy = false; if (btn) { btn.disabled = false; btn.textContent = '🤖 이 단계 AI 정리'; }
-  },
   async makeVerdict() {
     if (this.busy) return; this.busy = true;
     const btn = $('#vbtn'); if (btn) { btn.disabled = true; btn.textContent = '🤖 작성 중…'; }
@@ -945,9 +1062,10 @@ const Board = {
       const wt = winnerText(this.s, stt);
       const upd = {verdict:{full:out.full || '', short:out.short || '', winner:stt.winner, winnerText:wt, stats:stt, statsHTML:barsHTML(stt), ts:Date.now()}, speech:{text:(out.short || ''), ts:Date.now()}};
       if (this.s.stage !== STAGES.length - 1) { upd.stage = STAGES.length - 1; upd.timer = {running:false, endsAt:null, remaining:STAGES[STAGES.length - 1].min * 60}; }
+      upd['aiFail.verdict'] = false;
       await updateDoc(sref(this.sid), upd);
-    } catch (e) { toast(e.message, 5000); }
-    this.busy = false; if (btn) { btn.disabled = false; btn.textContent = `🤖 ${T(this.s).doc} 생성`; }
+    } catch (e) { toast(e.message, 6000); try { await updateDoc(sref(this.sid), {'aiFail.verdict':true}); } catch {} }
+    this.busy = false; if (btn) { btn.disabled = false; btn.textContent = `🤖 ${T(this.s).doc} 다시 생성`; }
   },
 };
 window.Board = Board;
@@ -1146,11 +1264,24 @@ const Admin = {
     }).join('');
     const roleTxt = no => { const r = roleOf(s, no); return r.side === 'aud' ? t.aud : (r.side === 'pro' ? '찬성' : '반대') + (r.clerk ? '(서기)' : ''); };
     const vm = Object.fromEntries(b.votes.map(v => [v.no, v]));
-    this.printData = {s, cls, b};
+    this.printData = {s, cls, b, sid};
     $('#rbody').innerHTML = `<div class="card"><div class="row noprint" style="justify-content:flex-end"><button class="ghost sm" onclick="Admin.printReports(1)">📄 1차 보고서 인쇄</button><button class="ghost sm" onclick="Admin.printReports(2)">📄 2차 보고서 인쇄</button></div><h2>${esc(s.title)}</h2><p class="mute">${esc(t.name)} · ${esc(s.date || '')} · ${esc(cls.year + ' ' + cls.name)}</p>
       <p><b style="color:var(--pro)">${t.pro}</b> ${(s.pro || []).map(no => esc(nm[no])).join(', ')}<br><b style="color:var(--con)">${t.con}</b> ${(s.con || []).map(no => esc(nm[no])).join(', ')}</p></div>
       <div class="card"><h3>투표 결과</h3>${barsHTML(stt)}<p><b>${esc(winnerText(s, stt))}</b></p><p class="mute">${Object.entries(stt.moves).map(([k, v]) => `${k}: ${v}명`).join(' · ') || '입장 이동 없음'}</p></div>
+      <div class="card noprint" style="border:2px dashed var(--gold)"><h3>🤖 AI를 직접 돌리기 (API가 안 될 때)</h3>
+        <p class="mute">복사한 내용을 Gemini나 Claude 채팅창에 붙여 넣고, 나온 결과를 아래 칸에 붙여 넣어 저장하면 진행 화면과 학생 화면에 그대로 표시됩니다.</p>
+        <label style="display:flex;gap:8px;align-items:center"><input type="checkbox" id="exAnon" checked style="width:auto"> 학생 이름을 익명으로 (찬성1, 청중3 …)</label>
+        <div class="row" style="margin-top:8px">
+          <button class="ghost sm" onclick="Admin.exAll(false)">📋 전체 기록 복사</button>
+          <button class="ghost sm" onclick="Admin.exAll(true)">⬇ 텍스트 파일 저장</button>
+          <button class="ghost sm" onclick="Admin.exOverview()">📋 쟁점 정리 요청문 복사</button>
+          <button class="ghost sm" onclick="Admin.exVerdict()">📋 ${t.doc} 요청문 복사</button></div>
+        <label>쟁점 정리 직접 입력</label><textarea id="ovManual" placeholder="찬성 측 핵심 / 반대 측 핵심 / 남은 쟁점">${esc(s.overview?.manual || (s.overview ? `찬성 측 핵심: ${(s.overview.pro || []).join(' / ')}\n반대 측 핵심: ${(s.overview.con || []).join(' / ')}\n남은 쟁점: ${(s.overview.open || []).join(' / ')}` : ''))}</textarea>
+        <button class="sm" style="margin-top:6px" onclick="Admin.saveOverview()">쟁점 정리 저장</button>
+        <label>${t.doc} 직접 입력</label><textarea id="vdManual" style="min-height:180px">${esc(s.verdict?.full || '')}</textarea>
+        <button class="sm" style="margin-top:6px" onclick="Admin.saveVerdict()">${t.doc} 저장</button></div>
       ${s.verdict ? `<div class="card"><h3>${t.doc}</h3><div class="prewrap">${esc(s.verdict.full)}</div></div>` : ''}
+      ${s.overview ? `<div class="card"><h3>교차 질의까지의 쟁점 정리</h3>${overviewHTML(s)}</div>` : ''}
       ${stageBlocks}
       <div class="card"><h3>${t.aud} 질문</h3>${b.questions.map(q => `<div>· ${esc(q.text)} <span class="mute">- ${esc(nm[q.no] || '')}</span></div>`).join('') || '<p class="mute">없음</p>'}</div>
       <div class="card"><h3>학생별 투표·보고서</h3><div style="overflow-x:auto"><table><tr><th>학번</th><th>이름</th><th>역할</th><th>사전</th><th>사후</th><th>보고서·느낀점</th></tr>
@@ -1160,6 +1291,29 @@ const Admin = {
         <td>${v?.post ? `<b>${STANCE[v.post.stance]}</b> ${esc(v.post.reason)}${v.post.changeReason ? '<br><span class="mute">변화: ' + esc(v.post.changeReason) + '</span>' : ''}` : ''}</td>
         <td>${rp?.pre ? '<div><span class="mute">사전:</span> ' + esc(String(rp.pre)) + '</div>' : ''}${rp?.post ? '<div><span class="mute">사후:</span> ' + esc(String(rp.post)) + '</div>' : ''}${rp?.reflection ? '<div><span class="mute">느낀점:</span> ' + esc(rp.reflection) + '</div>' : ''}</td></tr>`; }).join('')}
       </table></div></div>`;
+  },
+  exAll(file) {
+    const {s, cls, b} = this.printData, text = fullRecordText(s, cls, b, $('#exAnon').checked);
+    if (file) downloadText(`${s.date || ''} ${s.title} 토론 기록`, text); else copyText(text);
+  },
+  exOverview() {
+    const {s, b} = this.printData;
+    copyText(toChat(overviewPrompt(s, b.records.filter(x => BEFORE_READY.includes(x.stage))), "결과는 '찬성 측 핵심', '반대 측 핵심', '남은 쟁점' 세 제목으로 나눠 개조식으로 짧게 써라."));
+  },
+  exVerdict() {
+    const {s, cls, b} = this.printData, stt = voteStats(s, b.votes, cls);
+    copyText(toChat(verdictPrompt(s, b, stt), `${T(s).doc} 전문만 섹션 제목을 포함해 출력하라.`));
+  },
+  async saveOverview() {
+    const {sid} = this.printData, text = $('#ovManual').value.trim(); if (!text) return toast('내용을 입력하세요');
+    await updateDoc(sref(sid), {overview:{manual:text, ts:Date.now()}, 'aiFail.overview':false});
+    toast('쟁점 정리를 저장했습니다. 진행 화면에 바로 표시됩니다.');
+  },
+  async saveVerdict() {
+    const {s, cls, b, sid} = this.printData, text = $('#vdManual').value.trim(); if (!text) return toast('내용을 입력하세요');
+    const stt = voteStats(s, b.votes, cls);
+    await updateDoc(sref(sid), {verdict:{full:text, short:'', winner:stt.winner, winnerText:winnerText(s, stt), stats:stt, statsHTML:barsHTML(stt), manual:true, ts:Date.now()}, 'aiFail.verdict':false});
+    toast(`${T(s).doc}을 저장했습니다. 진행 화면에 바로 표시됩니다.`);
   },
   printReports(n) {
     const {s, cls, b} = this.printData, form = n === 1 ? REPORT1 : REPORT2, key = n === 1 ? 'r1' : 'r2', tsKey = n === 1 ? 'r1Ts' : 'r2Ts';
@@ -1233,6 +1387,7 @@ const Admin = {
       const items = this.studentItems(x.no), p = priv[x.no] || {};
       return `<div class="card"><div class="row"><b class="grow">${esc(x.no)} ${esc(x.name)}</b>${p.draft ? '<span class="badge gold">초안 있음</span>' : ''}
         <button class="ghost sm" onclick="this.closest('.card').querySelector('.det').hidden^=1">활동 자료 보기</button>
+        <button class="ghost sm" ${items ? '' : 'disabled'} onclick="Admin.exRecord('${x.no}')">📋 요청문 복사</button>
         <button class="gold sm" ${items ? '' : 'disabled'} onclick="Admin.genOne('${x.no}', this)">🤖 초안 생성</button></div>
         <div class="det" hidden><pre class="prewrap mute" style="font-family:inherit;font-size:14px">${esc(items || '활동 기록 없음')}</pre></div>
         <div class="ai prewrap" id="ro_${x.no}" style="margin-top:8px" ${p.roles ? '' : 'hidden'}><b>역할별 활동 정리</b>\n${esc(p.roles || '')}</div>
@@ -1241,6 +1396,7 @@ const Admin = {
     }).join('');
     cls.students.forEach(x => { const ta = $('#dr_' + x.no); ta.oninput = () => $('#cnt_' + x.no).textContent = ta.value.length + '자'; });
   },
+  exRecord(no) { copyText(toChat(recordPrompt(this.studentItems(no)), '특기사항 초안 한 문단만 출력하라.')); },
   async genOne(no, btn) {
     const items = this.studentItems(no); if (!items) return;
     if (btn) { btn.disabled = true; btn.textContent = '작성 중…'; }
