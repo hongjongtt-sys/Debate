@@ -230,6 +230,12 @@ const route = (location.hash || '').replace('#', '') || 'student';
 const studentUrl = sid => location.origin + location.pathname + '?s=' + sid;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 function nameMap(cls) { const m = {}; (cls?.students || []).forEach(x => m[x.no] = x.name); return m; }
+const canWrite = (s, r) => r.side !== 'aud' && (r.clerk || s.teamWrite !== false);
+// 서기가 아닌 팀원이 쓴 기록에는 '보충' 표시
+function recTag(s, y, nm) {
+  const clerk = y.side === 'pro' ? s.proClerk : s.conClerk;
+  return y.by && y.by !== clerk ? `<span class="badge" style="font-size:11px;padding:1px 6px;margin-right:4px">보충${nm && nm[y.by] ? '·' + esc(nm[y.by]) : ''}</span>` : '';
+}
 function roleOf(s, no) {
   if ((s.pro || []).includes(no)) return {side:'pro', clerk: s.proClerk === no};
   if ((s.con || []).includes(no)) return {side:'con', clerk: s.conClerk === no};
@@ -392,7 +398,8 @@ ${recLines(s, recs, 'con')}
 지시:
 1) 각 측 기록을 '주장 → 근거 → 반박' 흐름이 드러나도록 짧은 요점 2~5개로 정리하라. 서기 기록은 빠르게 적은 메모이므로 뜻을 살려 다듬되, 기록에 없는 내용은 절대 추가하지 마라. 기록이 없으면 빈 배열.
 2) ${t.mc}로서 양측에 중립적인 코멘트를 2~3문장의 존댓말 구어체로 작성하라. 이번 단계의 핵심 대립점과, 아직 충분히 답변되지 않은 쟁점 1가지를 짚어라. 소리 내어 읽을 문장이므로 기호나 괄호를 쓰지 마라.
-3) 법조문, 판례, 통계 등 기록에 없는 사실을 만들어 내지 마라.
+3) 서기와 팀원이 같은 발언을 중복해 적었을 수 있다. 같은 내용은 하나로 합쳐라.
+4) 법조문, 판례, 통계 등 기록에 없는 사실을 만들어 내지 마라.
 JSON으로만 답하라: {"pro":["..."],"con":["..."],"judge":"..."}`;
 }
 function overviewPrompt(s, recs) {
@@ -410,6 +417,7 @@ ${body || '(기록 없음)'}
 - pro: 찬성 측이 지금까지 내세운 핵심 논거 2~4개 (짧은 한 문장씩)
 - con: 반대 측이 지금까지 내세운 핵심 논거 2~4개
 - open: 아직 충분히 답변되지 않았거나 양측이 맞서고 있는 쟁점 1~3개
+- 같은 발언이 중복 기록되었을 수 있으니 하나로 합쳐라.
 - 기록에 없는 내용, 법조문, 판례, 통계를 만들어 내지 마라. 학생 이름은 쓰지 마라.
 JSON으로만 답하라: {"pro":["..."],"con":["..."],"open":["..."]}`;
 }
@@ -706,12 +714,12 @@ const Student = {
       }
     } else if (st.type === 'debate') {
       body = '';
-      if (r.clerk) {
+      if (canWrite(s, r)) {
         const members = (s[r.side] || []);
         const nm = nameMap(this.cls);
         const cur = this.speaker && members.includes(this.speaker) ? this.speaker : '';
-        body += `<div class="card side-${r.side}"><h3>✍️ ${r.side === 'pro' ? '찬성' : '반대'} 측 서기 기록</h3>
-          <p class="mute">발언자를 누르고 내용을 빠르게 적으세요. 정확한 문장이 아니어도 괜찮아요.</p>
+        body += `<div class="card side-${r.side}"><h3>✍️ ${r.side === 'pro' ? '찬성' : '반대'} 측 ${r.clerk ? '서기 기록' : '보충 기록'}</h3>
+          <p class="mute">${r.clerk ? '발언자를 누르고 내용을 빠르게 적으세요. 정확한 문장이 아니어도 괜찮아요.' : '서기가 놓친 발언이나 본인 발언을 보충해 주세요. 서기 기록과 겹쳐도 AI가 합쳐서 정리합니다. 발언 차례에는 말하기에 집중하세요!'}</p>
           <div class="chips" id="spk">${members.map(no => `<button class="chip ${cur === no ? 'on' : ''}" onclick="Student.setSpk('${no}')">${esc(nm[no])}</button>`).join('')}</div>
           <textarea id="recText" style="margin-top:10px;min-height:80px" placeholder="예: 16세도 납세 의무가 있으니 선거권도 있어야 한다"></textarea>
           <button style="width:100%;margin-top:8px" onclick="Student.addRec()">기록 올리기</button></div>`;
@@ -812,7 +820,7 @@ const Student = {
         if (!rs.length && !a) return '';
         return `<div style="margin-bottom:10px"><div class="mute" style="font-weight:700">${esc(stageName(s, STAGES.indexOf(x)))}</div>
           ${a ? `<div class="ai"><b>AI 정리</b><ul>${(a[side] || []).map(p => `<li>${esc(p)}</li>`).join('') || '<li>-</li>'}</ul></div>` : ''}
-          <div class="feed" style="margin-top:6px">${rs.map(y => `<div class="rec">${r.clerk && r.side === side ? `<button class="x" onclick="Student.delRec('${y.id}')">✕</button>` : ''}<span class="who">${esc(nm[y.speaker] || '')}</span>${esc(y.text)}</div>`).join('')}</div></div>`;
+          <div class="feed" style="margin-top:6px">${rs.map(y => `<div class="rec">${r.side === side && (r.clerk || y.by === this.me) ? `<button class="x" onclick="Student.delRec('${y.id}')">✕</button>` : ''}<span class="who">${esc(nm[y.speaker] || '')}</span>${recTag(s, y, nm)}${esc(y.text)}</div>`).join('')}</div></div>`;
       }).reverse().join('');
       return `<div class="card side-${side}"><h3 style="color:var(--${side})">${esc(side === 'pro' ? t.pro : t.con)}</h3>${byStage || '<p class="mute">아직 기록이 없습니다.</p>'}</div>`;
     };
@@ -954,7 +962,7 @@ const Board = {
       const col = side => {
         const rs = this.records.filter(x => x.side === side && x.stage === st.key).slice(-7);
         const inner = a ? `<div class="ai"><b>AI 정리</b><ul>${(a[side] || []).map(p => `<li>${esc(p)}</li>`).join('') || '<li>-</li>'}</ul></div>`
-          : (rs.length ? `<div class="feed">${rs.map(y => `<div class="rec"><span class="who">${esc(nm[y.speaker] || '')}</span>${esc(y.text)}</div>`).join('')}</div>` : `<p class="mute">서기 기록을 기다리는 중…</p>`);
+          : (rs.length ? `<div class="feed">${rs.map(y => `<div class="rec"><span class="who">${esc(nm[y.speaker] || '')}</span>${recTag(s, y)}${esc(y.text)}</div>`).join('')}</div>` : `<p class="mute">서기 기록을 기다리는 중…</p>`);
         return `<div class="col side-${side}"><h3 style="color:var(--${side})">${esc(side === 'pro' ? t.pro : t.con)}</h3>${inner}</div>`;
       };
       let qhtml = '';
@@ -965,7 +973,7 @@ const Board = {
       if (st.key === 'pro_close' || st.key === 'con_close') {
         const col2 = side => {
           const rs = this.records.filter(x => x.side === side && (x.stage === 'pro_close' || x.stage === 'con_close')).slice(-6);
-          return `<div class="col side-${side}"><h3 style="color:var(--${side})">${esc(side === 'pro' ? t.pro : t.con)} 마무리 발언</h3>${rs.length ? `<div class="feed">${rs.map(y => `<div class="rec"><span class="who">${esc(nm[y.speaker] || '')}</span>${esc(y.text)}</div>`).join('')}</div>` : '<p class="mute">서기 기록을 기다리는 중…</p>'}</div>`;
+          return `<div class="col side-${side}"><h3 style="color:var(--${side})">${esc(side === 'pro' ? t.pro : t.con)} 마무리 발언</h3>${rs.length ? `<div class="feed">${rs.map(y => `<div class="rec"><span class="who">${esc(nm[y.speaker] || '')}</span>${recTag(s, y)}${esc(y.text)}</div>`).join('')}</div>` : '<p class="mute">서기 기록을 기다리는 중…</p>'}</div>`;
         };
         main.innerHTML = `<div class="col" style="min-height:0;padding:12px 16px">${overviewHTML(s, true)}</div><div class="two" style="grid-template-columns:1fr 1fr">${col2('pro')}${col2('con')}</div>`;
       } else main.innerHTML = qhtml + `<div class="two" style="grid-template-columns:1fr 1fr">${col('pro')}${col('con')}</div>`;
@@ -1166,6 +1174,7 @@ const Admin = {
       <label>진영 배정 — 이름을 누를 때마다 <span class="badge">청중</span> → <span class="badge pro">찬성</span> → <span class="badge con">반대</span> 순으로 바뀝니다</label>
       <div class="chips" id="roster"></div>
       <div class="two" style="margin-top:6px"><div><label>찬성 측 서기</label><select id="spc"></select></div><div><label>반대 측 서기</label><select id="scc"></select></div></div>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:14px"><input type="checkbox" id="stw" style="width:auto" ${e.teamWrite !== false ? 'checked' : ''}> 팀원 보충 기록 허용 (서기 외 팀원도 기록 입력 가능)</label>
       <label>참고 자료 (선택) — 법 조문, 판례, 기사, 통계 등. 넣으면 AI가 이 자료만 근거로 인용하고, 비우면 법·판례를 언급하지 않습니다.</label>
       <textarea id="sr" style="min-height:140px">${esc(e.references || '')}</textarea>
       <div class="row" style="margin-top:14px"><button class="ghost" onclick="Admin.setTab('sessions')">취소</button><button onclick="Admin.saveSession()">저장</button></div></div>`;
@@ -1198,7 +1207,7 @@ const Admin = {
   async saveSession() {
     const e = this.edit;
     const data = {classId:$('#sc').value, date:$('#sd').value, format:$('#sf').value, title:$('#st').value.trim(), proLabel:$('#spl').value.trim(), conLabel:$('#scl').value.trim(),
-      pro:e.pro, con:e.con, proClerk:$('#spc').value, conClerk:$('#scc').value, references:$('#sr').value};
+      pro:e.pro, con:e.con, proClerk:$('#spc').value, conClerk:$('#scc').value, references:$('#sr').value, teamWrite:$('#stw').checked};
     if (!data.title) return toast('토론 주제를 입력하세요');
     if (!data.pro.length || !data.con.length) return toast('찬성·반대 진영을 배정하세요');
     if (!data.proClerk || !data.conClerk) return toast('양측 서기를 지정하세요');
@@ -1259,7 +1268,7 @@ const Admin = {
       if (!rs.length && !a) return '';
       const side = sd => `<div><b style="color:var(--${sd})">${sd === 'pro' ? t.pro : t.con}</b>
         ${a ? `<div class="ai" style="margin:6px 0"><b>AI 정리</b><ul>${(a[sd] || []).map(p => `<li>${esc(p)}</li>`).join('')}</ul></div>` : ''}
-        <div class="feed">${rs.filter(r => r.side === sd).map(r => `<div class="rec"><span class="who">${esc(nm[r.speaker] || '')}</span>${esc(r.text)}</div>`).join('')}</div></div>`;
+        <div class="feed">${rs.filter(r => r.side === sd).map(r => `<div class="rec"><span class="who">${esc(nm[r.speaker] || '')}</span>${recTag(s, r, nm)}${esc(r.text)}</div>`).join('')}</div></div>`;
       return `<div class="card"><h3>${esc(stageName(s, STAGES.indexOf(x)))}</h3>${a?.judge ? `<p class="ai"><b>${t.mc}</b> ${esc(a.judge)}</p>` : ''}<div class="two">${side('pro')}${side('con')}</div></div>`;
     }).join('');
     const roleTxt = no => { const r = roleOf(s, no); return r.side === 'aud' ? t.aud : (r.side === 'pro' ? '찬성' : '반대') + (r.clerk ? '(서기)' : ''); };
@@ -1367,7 +1376,9 @@ const Admin = {
       if (r.side !== 'aud') {
         const said = b.records.filter(x => x.speaker === no);
         if (said.length) lines.push('· 본인 발언(서기 기록): ' + said.map(x => `[${stageName(s, STAGES.findIndex(y => y.key === x.stage))}] ${x.text}`).join(' / '));
-        if (r.clerk) lines.push(`· 서기로서 ${b.records.filter(x => x.by === no).length}건의 발언을 기록함`);
+        const wrote = b.records.filter(x => x.by === no).length;
+        if (r.clerk) lines.push(`· 서기로서 ${wrote}건의 발언을 기록함`);
+        else if (wrote) lines.push(`· 팀원으로서 ${wrote}건의 발언을 보충 기록함`);
       }
       const v = b.votes.find(x => x.no === no);
       if (v?.pre) lines.push(`· 사전 입장: ${STANCE[v.pre.stance]} - ${v.pre.reason}`);
