@@ -313,7 +313,7 @@ const TTS = {
     });
     return out;
   },
-  speak(text, onend) {
+  speak(text, onend, onfail) {
     if (!this.on() || !('speechSynthesis' in window) || !text) { onend && onend(); return; }
     speechSynthesis.cancel();
     const my = ++this.gen, parts = this.chunks(text);
@@ -321,17 +321,26 @@ const TTS = {
     const v = voices.find(x => x.name === vn) || voices.find(x => x.lang?.startsWith('ko'));
     const rate = parseFloat(LS.get('voice_rate', '1')) || 1;
     let k = 0;
+    const fail = why => {
+      if (my !== this.gen) return;                       // 직접 중단·새 멘트로 인한 취소는 오류 아님
+      clearTimeout(this.watch); this.gen++; speechSynthesis.cancel();
+      onfail ? onfail(why) : toast('음성이 중단되었습니다: ' + why, 6000);
+    };
     const next = () => {
       if (my !== this.gen) return;                       // 다른 멘트가 시작되면 중단
+      clearTimeout(this.watch);
       if (k >= parts.length) { onend && onend(); return; }
       const u = new SpeechSynthesisUtterance(parts[k++]);
       u.lang = 'ko-KR'; u.rate = rate; if (v) u.voice = v;
-      u.onend = next; u.onerror = next;
+      u.onend = next;
+      u.onerror = e => fail(e.error || '알 수 없는 오류');
+      // 크롬이 끝 신호 없이 말을 멈추는 경우 대비: 예상 시간의 2배가 지나도 안 끝나면 실패로 처리
+      this.watch = setTimeout(() => fail('완료 신호 없음'), Math.max(15000, u.text.length / rate * 400));
       speechSynthesis.speak(u);
     };
     setTimeout(next, 120);                               // cancel 직후 바로 speak하면 무시되는 문제 방지
   },
-  stop() { this.gen++; if ('speechSynthesis' in window) speechSynthesis.cancel(); }
+  stop() { this.gen++; clearTimeout(this.watch); if ('speechSynthesis' in window) speechSynthesis.cancel(); }
 };
 if ('speechSynthesis' in window) speechSynthesis.onvoiceschanged = () => {};
 
@@ -897,6 +906,21 @@ window.Student = Student;
    ===================================================================== */
 const Board = {
   sid:null, s:null, cls:null, records:[], votes:[], questions:[], presence:[], lastStage:-1, lastSpeechTs:null, busy:false, beeped:false,
+  TAB:Math.random().toString(36).slice(2) + Date.now().toString(36), isCtl:false, voiceFail:null,
+  ctlRef() { return doc(db, 'debate_meta', 'ctl_' + this.sid); },
+  // 조작권: 10초마다 갱신. 25초 넘게 갱신이 없으면(탭 닫힘 등) 다른 탭이 이어받을 수 있음
+  watchControl() {
+    onSnapshot(this.ctlRef(), d => {
+      const c = d.exists() ? d.data() : null, mine = c?.id === this.TAB;
+      if (!mine && (!c || Date.now() - (c.ts || 0) > 25000)) { this.claim(); return; }
+      if (mine !== this.isCtl) { this.isCtl = mine; if (!mine) TTS.stop(); this.render(); }
+    });
+    setInterval(() => { if (this.isCtl) setDoc(this.ctlRef(), {id:this.TAB, ts:Date.now()}).catch(() => {}); }, 10000);
+    addEventListener('pagehide', () => { if (this.isCtl) deleteDoc(this.ctlRef()).catch(() => {}); });
+  },
+  claim() { return setDoc(this.ctlRef(), {id:this.TAB, ts:Date.now()}).catch(e => toast('조작권 가져오기 실패: ' + e.message)); },
+  takeOver() { if (confirm('다른 탭(기기)의 진행을 멈추고 여기서 진행할까요?')) this.claim(); },
+  can() { if (IS_TEACHER && this.isCtl) return true; if (IS_TEACHER) toast('다른 탭에서 진행 중입니다. [여기서 진행하기]를 누르세요.'); return false; },
   async start() {
     this.sid = params.get('s');
     if (!this.sid) { const a = await getDoc(doc(db, 'debate_meta', 'active')); this.sid = a.exists() ? a.data().sid : null; }
@@ -910,7 +934,12 @@ const Board = {
       else if ((this.s.speech?.ts || 0) > this.lastSpeechTs) {
         this.lastSpeechTs = this.s.speech.ts;
         const kind = this.s.speech.kind, stage = this.s.stage;
-        TTS.speak(this.s.speech.text, () => { if (kind === 'stage' && this.s.stage === stage) this.startTimerIfIdle(); });
+        if (IS_TEACHER && this.isCtl) {                     // 조작권이 있는 화면 한 곳에서만 낭독
+          this.voiceFail = null; this.paintVoice();
+          TTS.speak(this.s.speech.text,
+            () => { if (kind === 'stage' && this.s.stage === stage) this.startTimerIfIdle(); },
+            why => { this.voiceFail = why; this.paintVoice(); });
+        }
       }
       if (this.s.stage !== this.lastStage) { this.lastStage = this.s.stage; this.beeped = false; this.render(); } else this.update();
     });
@@ -920,7 +949,9 @@ const Board = {
     onSnapshot(collection(db, 'debate_sessions', sid, 'reports'), q => { this.reports = Object.fromEntries(q.docs.map(d => [d.id, d.data()])); this.update(); });
     onSnapshot(collection(db, 'debate_sessions', sid, 'presence'), q => { this.presence = q.docs.map(d => ({no:d.id, ...d.data()})); this.update(); });
     setInterval(() => this.tick(), 250);
+    if (IS_TEACHER) this.watchControl();
     if (IS_TEACHER) document.addEventListener('keydown', e => {
+      if (!this.isCtl) return;
       if (e.target.closest('input,textarea,select')) return;
       if (e.key === 'ArrowRight' || e.key === 'PageDown') { e.preventDefault(); this.go(1); }      // 다음 단계 (프레젠터 리모컨 호환)
       else if (e.key === 'ArrowLeft' || e.key === 'PageUp') { e.preventDefault(); this.go(-1); }
@@ -936,7 +967,7 @@ const Board = {
       <div class="stagebar"><div class="stagename">${esc(stageName(s, s.stage))}</div><div class="timer" id="btimer"></div></div>
       <div class="main" id="bmain"></div>
       <div class="caption"><span class="who">${esc(t.mc)}</span><span id="bcap" class="grow"></span></div>
-      ${IS_TEACHER ? this.ctrlHTML() : ''}
+      ${IS_TEACHER ? (this.isCtl ? this.ctrlHTML() : `<div class="ctrl noprint" style="background:#fff7e0"><b>👀 보기 전용</b><span class="mute grow">다른 탭이나 기기에서 진행 중입니다. 이 화면에서는 소리가 나지 않고 조작할 수 없어요.</span><button class="sm" onclick="Board.takeOver()">여기서 진행하기</button></div>`) : ''}
     </div>`;
     this.update();
   },
@@ -950,7 +981,7 @@ const Board = {
       <button class="ghost sm" onclick="Board.timerAdd(60)">+1분</button><button class="ghost sm" onclick="Board.timerAdd(-60)">-1분</button><button class="ghost sm" onclick="Board.timerReset()">↺</button><span class="sep"></span>` : ''}
       ${st.type === 'result' ? `<button class="ghost sm" id="vbtn" onclick="Board.makeVerdict()">🤖 ${esc(T(this.s).doc)} 다시 생성</button>
         <button class="con sm" onclick="Board.endDebate()">🏁 토론 종료</button>` : ''}
-      <span id="failbox" class="row" style="gap:6px"></span>
+      <span id="failbox" class="row" style="gap:6px"></span><span id="voicebox"></span>
       <span class="sep"></span>
       <button class="gold sm" id="mentbtn" onclick="Board.ment()" title="스페이스바">▶ 멘트 시작</button>
       <button class="ghost sm" id="vtoggle" onclick="Board.voiceToggle()">${TTS.on() ? '🔈 음성 끄기' : '🔇 음성 켜기'}</button>
@@ -1021,7 +1052,11 @@ const Board = {
       `<button class="gold sm" title="계속 실패하면 관리 화면 → 기록·결과에서 직접 입력할 수 있습니다" onclick="Board.retry('${k}')">⚠ ${esc(k === 'overview' ? '쟁점 정리' : k === 'verdict' ? T(s).doc : stageName(s, STAGES.findIndex(x => x.key === k)))} 다시 만들기</button>`).join('');
   },
   reportCount() { return Object.values(this.reports || {}).filter(r => r.pre).length; },
-  exit() { TTS.stop(); location.href = location.pathname + '#admin'; setTimeout(() => location.reload(), 50); },
+  paintVoice() {
+    const el = $('#voicebox'); if (!el) return;
+    el.innerHTML = this.voiceFail ? `<span class="badge con" style="font-size:13px">🔇 음성이 중단되었습니다 (${esc(this.voiceFail)}) — [▶ 멘트 시작]으로 다시 읽거나, 직접 안내 후 [▶ 타이머 시작]을 누르세요</span>` : '';
+  },
+  exit() { TTS.stop(); if (this.isCtl) deleteDoc(this.ctlRef()).catch(() => {}); location.href = location.pathname + '#admin'; setTimeout(() => location.reload(), 50); },
   fullscreen() { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.(); },
   drawQR(size) {
     const el = $('#qr'); if (!el || !window.QRCode) return;
@@ -1034,12 +1069,13 @@ const Board = {
     const r = timerRemain(this.s);
     el.textContent = fmtTime(r);
     el.className = 'timer' + (r < 0 ? ' over' : r < 30 ? ' low' : '');
-    if (r <= 0 && this.s.timer?.running && !this.beeped) { this.beeped = true; this.beep(); }
+    if (r <= 0 && this.s.timer?.running && !this.beeped) { this.beeped = true; if (this.isCtl) this.beep(); }
   },
   beep() {
     try { const c = new AudioContext(); [0, .35, .7].forEach(d => { const o = c.createOscillator(), g = c.createGain(); o.frequency.value = 880; o.connect(g); g.connect(c.destination); g.gain.value = .15; o.start(c.currentTime + d); o.stop(c.currentTime + d + .2); }); } catch {}
   },
   async go(dir) {
+    if (!this.can()) return;
     const from = this.s.stage;
     const i = Math.max(0, Math.min(STAGES.length - 1, from + dir));
     const st = STAGES[i], sec = st.min * 60, run = ['debate', 'ready', 'post'].includes(st.type);
@@ -1071,8 +1107,9 @@ const Board = {
       await updateDoc(sref(this.sid), {overview:{pro:out.pro || [], con:out.con || [], open:out.open || [], ts:Date.now()}, 'aiFail.overview':false});
     } catch (e) { await updateDoc(sref(this.sid), {'aiFail.overview':true}); toast('쟁점 정리 실패: ' + e.message, 5000); }
   },
-  retry(key) { if (key === 'overview') this.makeOverview(); else if (key === 'verdict') this.makeVerdict(); else this.summarize(key); },
+  retry(key) { if (!this.can()) return; if (key === 'overview') this.makeOverview(); else if (key === 'verdict') this.makeVerdict(); else this.summarize(key); },
   async endDebate() {
+    if (!this.can()) return;
     if (!confirm('토론을 종료할까요? 학생 화면에서는 "지난 토론"으로 옮겨지고, 보고서·소감은 계속 작성할 수 있습니다.')) return;
     await updateDoc(sref(this.sid), {status:'done', speech:{text:`이상으로 모든 순서를 마치겠습니다. 토론자 여러분은 2차 보고서를, ${T(this.s).aud} 여러분은 소감을 작성해 주십시오. 수고하셨습니다.`, ts:Date.now(), kind:'end'}});
     const a = await getDoc(doc(db, 'debate_meta', 'active'));
@@ -1080,16 +1117,19 @@ const Board = {
     toast('토론을 종료했습니다. 낭독이 끝나면 ✕ 관리 화면을 누르세요.', 6000);
   },
   async timerToggle() {
+    if (!this.can()) return;
     const t = this.s.timer || {}, r = timerRemain(this.s);
     await updateDoc(sref(this.sid), {timer: t.running ? {running:false, endsAt:null, remaining:r, autoStart:false} : {running:true, endsAt:Date.now() + r * 1000, remaining:r, autoStart:false}});
   },
   async timerAdd(d) {
+    if (!this.can()) return;
     const t = this.s.timer || {}, r = timerRemain(this.s) + d; this.beeped = false;
     await updateDoc(sref(this.sid), {timer: t.running ? {running:true, endsAt:Date.now() + r * 1000, remaining:r} : {running:false, endsAt:null, remaining:r}});
   },
-  async timerReset() { const sec = STAGES[this.s.stage].min * 60; this.beeped = false; await updateDoc(sref(this.sid), {timer:{running:false, endsAt:null, remaining:sec}}); },
+  async timerReset() { if (!this.can()) return; const sec = STAGES[this.s.stage].min * 60; this.beeped = false; await updateDoc(sref(this.sid), {timer:{running:false, endsAt:null, remaining:sec}}); },
   // 멘트 시작: 현재 단계 멘트를 읽고, 다 읽으면 타이머 자동 시작 (이미 돌고 있으면 다시 읽기만)
   async ment() {
+    if (!this.can()) return;
     const text = script(this.s, this.s.stage);
     await updateDoc(sref(this.sid), {speech:{text, ts:Date.now(), kind:'stage'}});
     if (!TTS.on()) this.startTimerIfIdle();
@@ -1102,10 +1142,12 @@ const Board = {
   },
   voiceToggle() { LS.set('voice', TTS.on() ? '0' : '1'); if (!TTS.on()) TTS.stop(); else TTS.speak('음성을 켰습니다.'); $('#vtoggle').textContent = TTS.on() ? '🔈 음성 끄기' : '🔇 음성 켜기'; },
   async spot(qid) {
+    if (!this.can()) return;
     const q = this.questions.find(x => x.id === qid); if (!q) return;
     await updateDoc(sref(this.sid), {spotQ:qid, speech:{text:`${T(this.s).aud} 질문입니다. ${q.text}`, ts:Date.now(), kind:'q'}});
   },
   async makeVerdict() {
+    if (!this.can()) return;
     if (this.busy) return; this.busy = true;
     const btn = $('#vbtn'); if (btn) { btn.disabled = true; btn.textContent = '🤖 작성 중…'; }
     try {
