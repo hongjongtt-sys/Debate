@@ -4,7 +4,17 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>토론법정</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard.min.css">
+<!-- 서버에 미리 연결해 첫 접속을 빠르게 -->
+<link rel="preconnect" href="https://www.gstatic.com" crossorigin>
+<link rel="preconnect" href="https://firestore.googleapis.com" crossorigin>
+<link rel="preconnect" href="https://identitytoolkit.googleapis.com" crossorigin>
+<link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+<link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js">
+<link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js">
+<link rel="modulepreload" href="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js">
+<!-- 글꼴: 필요한 글자만 받는 버전, 화면 그리기를 막지 않게 나중에 적용 -->
+<link rel="preload" as="style" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard-dynamic-subset.min.css" onload="this.onload=null;this.rel='stylesheet'">
+<noscript><link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/static/pretendard-dynamic-subset.min.css"></noscript>
 <style>
 :root{
   --ink:#1b2333; --ink2:#4a5468; --mute:#8a93a6; --line:#e3e6ee; --bg:#f5f6fa; --card:#fff;
@@ -56,6 +66,7 @@ h1,h2,h3{margin:0 0 8px;line-height:1.3} h2{font-size:20px} h3{font-size:17px}
 .rec .late-tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ink2);background:var(--neu-bg);border-radius:99px;padding:1px 8px;margin-right:6px}
 .late-sep{display:flex;align-items:center;gap:8px;color:var(--mute);font-size:12px;font-weight:700;margin:4px 0}
 .late-sep::before,.late-sep::after{content:'';flex:1;border-top:1px solid var(--line)}
+.aibusy{font-size:13px;font-weight:700;color:#8a6a1c;background:#f7efd9;border-radius:99px;padding:4px 10px}
 .side-pro{border-top:4px solid var(--pro)} .side-con{border-top:4px solid var(--con)}
 .ai{background:#fbf8ef;border:1px solid #eadbb0;border-radius:10px;padding:10px 12px;font-size:15px}
 .ai ul{margin:4px 0 0;padding-left:18px}
@@ -102,8 +113,9 @@ th{color:var(--ink2);font-weight:600;background:#fafbfd}
 </style>
 </head>
 <body>
-<div id="app"><div class="wrap"><p class="mute">불러오는 중…</p></div></div>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<div id="app"><div class="wrap"><p class="mute" style="text-align:center;margin-top:40px">⚖️ 접속 중…</p></div></div>
+<!-- QR 그리기 도구는 학생 화면에 필요 없어 기다리지 않고 받음 (받은 뒤 진행 화면 QR 다시 그림) -->
+<script async src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js" onload="window.Board&&Board.s&&Board.update()"></script>
 <script type="module">
 import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
 import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, addDoc, getDocs, onSnapshot, query, where, orderBy } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
@@ -184,6 +196,17 @@ const LS = {
   set(k, v) { try { localStorage.setItem('debate_' + k, v); } catch {} },
   del(k) { try { localStorage.removeItem('debate_' + k); } catch {} },
 };
+// 보고서 자동 임시 저장(이 기기에만): 쓰는 동안 저장, 서버에 저장되면 지움
+const Draft = {
+  key: (sid, no, f) => `draft_${sid}_${no}_${f}`,
+  get(sid, no, f) { try { return JSON.parse(LS.get(this.key(sid, no, f)) || 'null'); } catch { return null; } },
+  set(sid, no, f, d) { LS.set(this.key(sid, no, f), JSON.stringify({d, ts:Date.now()})); },
+  del(sid, no, f) { LS.del(this.key(sid, no, f)); },
+};
+// AI 기본 모델: 빠른 flash-lite. 예전 기본값(3.8-flash)이 저장된 기기는 한 번만 새 기본값으로 바꿈
+const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
+if (!LS.get('model_v2')) { if (LS.get('gemini_model') === 'gemini-3.8-flash') LS.set('gemini_model', DEFAULT_MODEL); LS.set('model_v2', '1'); }
+const LOADING = msg => `<div class="wrap"><p class="mute" style="text-align:center;margin-top:40px">⚖️ ${msg}</p></div>`;
 function toast(msg, ms = 2600) {
   const el = document.createElement('div'); el.className = 'toast'; el.textContent = msg;
   document.body.appendChild(el); setTimeout(() => el.remove(), ms);
@@ -277,36 +300,49 @@ window.teacherLogin = teacherLogin;
 window.teacherLogout = async () => { await signOut(auth); location.reload(); };
 
 /* ================= Gemini ================= */
+// 모델별 '생각' 단계 최소값 (공식 문서 기준: 3.8-flash·pro는 low부터, flash-lite·3.6-flash는 minimal 가능, 2.5-flash-lite는 기본 꺼짐)
+function thinkLevel(model) {
+  if (/2\.5-flash-lite/.test(model)) return null;
+  if (/flash-lite|3\.6-flash|3-flash-preview/.test(model)) return 'minimal';
+  return 'low';
+}
 async function gemini(prompt, json = true) {
   const key = LS.get('gemini_key');
   if (!key) throw new Error('관리 화면 → 설정에서 Gemini API 키를 먼저 입력하세요.');
-  const main = LS.get('gemini_model') || 'gemini-3.8-flash';
-  // 서버 혼잡(503)·한도(429) 시 재시도 후 예비 모델로 자동 전환
-  const models = [...new Set([main, 'gemini-3.6-flash', 'gemini-3.5-flash-lite'])];
-  const body = {contents:[{role:'user', parts:[{text:prompt}]}], generationConfig:{temperature:0.4}};
-  if (json) body.generationConfig.responseMimeType = 'application/json';
+  const main = LS.get('gemini_model') || DEFAULT_MODEL;
+  // 혼잡(503)·한도(429)·응답 지연이면 짧게 한 번 다시 시도한 뒤 예비 모델로 바로 전환
+  const models = [...new Set([main, 'gemini-3.5-flash-lite', 'gemini-3.6-flash'])];
   let r, lastStatus = 0, lastText = '';
   outer: for (const model of models) {
+    let think = thinkLevel(model);
     for (let attempt = 0; attempt < 2; attempt++) {
+      const body = {contents:[{role:'user', parts:[{text:prompt}]}], generationConfig:{}};
+      if (json) body.generationConfig.responseMimeType = 'application/json';
+      if (think) body.generationConfig.thinkingConfig = {thinkingLevel:think};
+      const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 20000);
       try {
         r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`, {
-          method:'POST', headers:{'Content-Type':'application/json', 'x-goog-api-key':key}, body:JSON.stringify(body)
+          method:'POST', headers:{'Content-Type':'application/json', 'x-goog-api-key':key}, body:JSON.stringify(body), signal:ctl.signal
         });
-      } catch { r = null; lastStatus = 0; lastText = '네트워크 오류'; await sleep(1500); continue; }
+      } catch (e) {
+        r = null; lastStatus = 0; lastText = e.name === 'AbortError' ? '응답 지연' : '네트워크 오류';
+        if (e.name === 'AbortError') continue outer;   // 20초 넘게 걸리면 예비 모델로
+        await sleep(800); continue;
+      } finally { clearTimeout(timer); }
       if (r.ok) break outer;
       lastStatus = r.status; lastText = await r.text();
       if (r.status === 400 && /API key/i.test(lastText)) throw new Error('API 키가 올바르지 않습니다.');
+      if (r.status === 400 && think && /think/i.test(lastText)) { think = null; attempt--; continue; }   // 이 모델이 생각 설정을 안 받으면 빼고 다시
       if (r.status === 403) throw new Error('이 키로는 Gemini를 쓸 수 없습니다. 키를 다시 확인하세요.');
-      if (r.status === 404) continue outer;            // 이 모델을 쓸 수 없음 → 다음 모델
-      if (r.status === 503 || r.status === 500) { await sleep(2000 * (attempt + 1)); continue; }
-      if (r.status === 429) continue outer;            // 이 모델 한도 초과 → 다음 모델
+      if (r.status === 404 || r.status === 429) continue outer;   // 쓸 수 없는 모델·한도 초과 → 다음 모델
+      if (r.status === 503 || r.status === 500) { if (attempt === 0) await sleep(800); continue; }
       throw new Error('AI 오류 ' + r.status + ': ' + lastText.slice(0, 160));
     }
   }
   if (!r || !r.ok) {
     if (lastStatus === 429) throw new Error('무료 사용량 한도에 걸렸습니다. 1분쯤 뒤에 다시 시도하세요.');
     if (lastStatus === 503 || lastStatus === 500) throw new Error('구글 AI 서버가 혼잡합니다. 잠시 후 다시 눌러 주세요.');
-    throw new Error('AI 연결 실패 (' + (lastStatus || '네트워크') + ')');
+    throw new Error('AI 연결 실패 (' + (lastStatus || lastText || '네트워크') + ')');
   }
   const d = await r.json();
   const text = (d.candidates?.[0]?.content?.parts || []).map(p => p.text || '').join('');
@@ -611,13 +647,29 @@ const Student = {
   sid:null, s:null, cls:null, classId:null, me:null, role:null, records:[], myVote:null, myReport:null, lastStage:-1, unsub:[],
   ident() { try { return JSON.parse(LS.get('me') || 'null'); } catch { return null; } },
   async start() {
+    app.addEventListener('input', e => this.autoSave(e.target));
     const id = this.ident();
     if (!id) return this.renderLogin();
-    const cd = await getDoc(doc(db, 'debate_classes', id.classId));
-    if (!cd.exists() || !nameMap(cd.data())[id.no]) { LS.del('me'); return this.renderLogin(); }
-    this.cls = cd.data(); this.classId = id.classId; this.me = id.no;
+    // 학급 명단: 이 기기에 저장해 둔 것으로 바로 들어가고, 서버 값은 뒤에서 받아 갱신
+    const ck = 'cls_' + id.classId;
+    const fresh = getDoc(doc(db, 'debate_classes', id.classId)).then(cd => {
+      const d = cd.exists() ? cd.data() : null;
+      if (!d || !nameMap(d)[id.no]) { LS.del('me'); LS.del(ck); return null; }
+      LS.set(ck, JSON.stringify(d)); this.cls = d; return d;
+    });
+    let cached = null; try { cached = JSON.parse(LS.get(ck) || 'null'); } catch {}
+    if (cached && nameMap(cached)[id.no]) {
+      this.cls = cached;
+      fresh.then(d => { if (!d) location.href = location.pathname; }).catch(() => {});   // 명단에서 빠졌으면 다시 학번 입력
+    } else {
+      const d = await fresh; if (!d) return this.renderLogin();
+    }
+    this.classId = id.classId; this.me = id.no;
+    this.route();
+  },
+  route() {
     const sid = params.get('s');
-    if (sid) return this.openSession(sid);
+    if (sid) return params.get('r') === '1' ? this.reportPage(sid) : this.openSession(sid);
     this.home();
   },
   /* ----- 학번 로그인 (기기에 기억) ----- */
@@ -642,11 +694,16 @@ const Student = {
       .filter(c => nameMap(c)[no]).sort((a, b) => (b.year || 0) - (a.year || 0));
     $('#lbtn').disabled = false;
     if (!cs.length) { $('#err').textContent = '명단에 없는 학번입니다. 다시 확인하세요.'; return; }
-    this.renderLogin({no, name:nameMap(cs[0])[no], classId:cs[0].id});
+    const {id, ...cls} = cs[0];
+    this.renderLogin({no, name:nameMap(cls)[no], classId:id, cls});
   },
+  // 학번 확인 후 새로고침 없이 바로 들어감
   confirm() {
     const c = this.cand; LS.set('me', JSON.stringify({no:c.no, classId:c.classId}));
-    location.reload();
+    LS.set('cls_' + c.classId, JSON.stringify(c.cls));
+    this.cls = c.cls; this.classId = c.classId; this.me = c.no;
+    app.innerHTML = LOADING('접속 중…');
+    this.route();
   },
   async logout() {
     if (!confirm('학번을 바꿀까요? 작성한 내용은 저장되어 있습니다.')) return;
@@ -666,10 +723,10 @@ const Student = {
       const live = sessions.find(s => st(s) === 'live');
       const prep = sessions.filter(s => st(s) === 'prep' && mine(s).side !== 'aud');
       const done = sessions.filter(s => st(s) === 'done');
-      const item = (s, extra) => {
+      const item = (s, extra, href) => {
         const r = mine(s), t = T(s);
         const badge = r.side === 'pro' ? `<span class="badge pro">${esc(t.pro)}${r.clerk ? ' · 서기' : ''}</span>` : r.side === 'con' ? `<span class="badge con">${esc(t.con)}${r.clerk ? ' · 서기' : ''}</span>` : `<span class="badge gold">${esc(t.aud)}</span>`;
-        return `<div class="list-item" style="cursor:pointer" onclick="location.href='?s=${s.id}'"><div class="grow"><b>${esc(s.title)}</b><div class="mute">${esc(s.date || '날짜 미정')} · ${esc(t.name)}</div></div>${badge}${extra || ''}<span style="font-size:20px">›</span></div>`;
+        return `<div class="list-item" style="cursor:pointer" onclick="location.href='${href || '?s=' + s.id}'"><div class="grow"><b>${esc(s.title)}</b><div class="mute">${esc(s.date || '날짜 미정')} · ${esc(t.name)}</div></div>${badge}${extra || ''}<span style="font-size:20px">›</span></div>`;
       };
       app.innerHTML = `<div class="top"><div class="wrap"><b class="grow">⚖️ 토론법정</b><span style="font-size:14px">${esc(this.me)} ${esc(nm)}</span><button class="ghost sm" onclick="Student.logout()">학번 변경</button></div></div>
       <div class="wrap">
@@ -678,9 +735,9 @@ const Student = {
             <h2 style="margin-top:8px">${esc(live.title)}</h2>
             <button style="width:100%;margin-top:8px">참여하기</button></div>`
           : `<div class="card mute" style="text-align:center">지금 진행 중인 토론은 없습니다.</div>`}
-        <div class="card"><h3>✍️ 내가 토론자인 주제</h3><p class="mute">토론 전에 사전 보고서를 미리 작성하세요.</p>
-          ${prep.map(s => { const rep = this.reps?.[s.id]; return item(s, rep ? '<span class="badge gold">보고서 ✅</span>' : '<span class="badge">보고서 미제출</span>'); }).join('') || '<p class="mute">준비 중인 토론이 없습니다.</p>'}</div>
-        <div class="card"><h3>📁 지난 토론</h3>${done.map(s => item(s)).join('') || '<p class="mute">아직 없습니다.</p>'}</div>
+        <div class="card"><h3>✍️ 내가 토론자인 주제</h3><p class="mute">눌러서 1차(사전) 보고서를 작성하세요. 토론 전이든 후든 언제든 쓰고 고칠 수 있고, PC에서도 같은 주소로 들어와 쓸 수 있어요.</p>
+          ${prep.map(s => { const rep = this.reps?.[s.id]; return item(s, rep ? '<span class="badge gold">보고서 ✅</span>' : '<span class="badge">보고서 미제출</span>', `?s=${s.id}&r=1`); }).join('') || '<p class="mute">준비 중인 토론이 없습니다.</p>'}</div>
+        <div class="card"><h3>📁 지난 토론</h3>${done.map(s => item(s, mine(s).side !== 'aud' && this.reps?.[s.id] === false ? '<span class="badge">1차 보고서 미제출</span>' : '')).join('') || '<p class="mute">아직 없습니다.</p>'}</div>
       </div>`;
     };
     this.reps = {};
@@ -694,25 +751,64 @@ const Student = {
       draw();
     }));
   },
+  // 회차·진행 중 표시·내 투표·내 보고서를 한꺼번에 받아 바로 화면을 그림
+  async loadMine(sid, withMeta) {
+    const reqs = [getDoc(sref(sid)), getDoc(doc(db, 'debate_sessions', sid, 'reports', this.me))];
+    if (withMeta) reqs.push(getDoc(doc(db, 'debate_sessions', sid, 'votes', this.me)), getDoc(doc(db, 'debate_meta', 'active')));
+    const [sd, r0, v0, a] = await Promise.all(reqs);
+    if (!sd.exists()) { app.innerHTML = `<div class="wrap"><div class="card">토론을 찾을 수 없습니다. <a href="${location.pathname}">목록으로</a></div></div>`; return null; }
+    if (sd.data().classId !== this.classId) { app.innerHTML = `<div class="wrap"><div class="card">우리 반 토론이 아닙니다. <a href="${location.pathname}">목록으로</a></div></div>`; return null; }
+    this.sid = sid; this.s = sd.data(); this.role = roleOf(this.s, this.me);
+    this.myReport = r0.exists() ? r0.data() : null;
+    if (v0) this.myVote = v0.exists() ? v0.data() : null;
+    return {active: a?.exists() ? a.data().sid : null};
+  },
   async openSession(sid) {
-    const sd = await getDoc(sref(sid));
-    if (!sd.exists()) { app.innerHTML = `<div class="wrap"><div class="card">토론을 찾을 수 없습니다. <a href="${location.pathname}">목록으로</a></div></div>`; return; }
-    this.s = sd.data();
-    if (this.s.classId !== this.classId) { app.innerHTML = `<div class="wrap"><div class="card">우리 반 토론이 아닙니다. <a href="${location.pathname}">목록으로</a></div></div>`; return; }
-    this.sid = sid;
-    const a = await getDoc(doc(db, 'debate_meta', 'active'));
-    if (a.exists() && a.data().sid === sid) {
-      // 진행 중인 토론에만 접속 기록. 같은 기기로 접속했던 다른 학번은 지움 → 기기 1대 = 학생 1명
+    app.innerHTML = LOADING('토론에 들어가는 중…');
+    const got = await this.loadMine(sid, true); if (!got) return;
+    if (got.active === sid) this.markPresence(sid);   // 접속 기록은 기다리지 않고 뒤에서
+    this.lastStage = this.s.stage; this.render();
+    this.enter();
+  },
+  // 진행 중인 토론에만 접속 기록. 같은 기기로 접속했던 다른 학번은 지움 → 기기 1대 = 학생 1명
+  markPresence(sid) {
+    (async () => {
       const mine = await getDocs(query(collection(db, 'debate_sessions', sid, 'presence'), where('uid', '==', USER.uid)));
       await Promise.all(mine.docs.filter(d => d.id !== this.me).map(d => deleteDoc(d.ref)));
       await setDoc(doc(db, 'debate_sessions', sid, 'presence', this.me), {name:nameMap(this.cls)[this.me], ts:Date.now(), uid:USER.uid});
-    }
-    this.enter();
+    })().catch(() => {});
   },
-  async enter() {
+  // 1차 보고서 전용 화면: 토론 단계와 상관없이 언제든 작성·수정
+  async reportPage(sid) {
+    this.mode = 'report';
+    app.innerHTML = LOADING('보고서를 불러오는 중…');
+    if (!await this.loadMine(sid, false)) return;
+    if (this.role.side === 'aud') { app.innerHTML = this.header() + `<div class="wrap"><div class="card" style="margin-top:14px">이 토론에서는 ${esc(T(this.s).aud)}이라 쓸 보고서가 없습니다. <a href="?s=${sid}">토론 화면으로</a></div></div>`; return; }
+    this.drawReportPage();
+  },
+  drawReportPage() {
+    app.innerHTML = this.header() + `<div class="wrap" style="margin-top:14px">${this.preReportForm(true)}
+      <p style="text-align:center"><a href="?s=${this.sid}">토론 화면으로 가기 ›</a></p></div>`;
+  },
+  redraw() { this.mode === 'report' ? this.drawReportPage() : this.render(); },
+  // 입력하는 동안 이 기기에 자동 임시 저장 (0.6초 쉬면 저장)
+  autoSave(el) {
+    if (!this.sid || !el?.id) return;
+    const f = el.id.startsWith('r1_') ? 'r1' : (el.id.startsWith('r2_') || (el.id === 'reflection' && $('#r2_role'))) ? 'r2' : null;
+    if (!f) return;
+    clearTimeout(this._as); this._as = setTimeout(() => {
+      const d = readForm(f === 'r1' ? REPORT1 : REPORT2, f).d;
+      if (f === 'r2') d._reflection = $('#reflection')?.value || '';
+      Draft.set(this.sid, this.me, f, d);
+    }, 600);
+  },
+  // 서버 값보다 이 기기의 자동 저장이 더 최근이면 그것을 보여줌
+  draftOr(f, srv, srvTs) {
+    const dr = Draft.get(this.sid, this.me, f);
+    return dr && dr.ts > (srvTs || 0) ? {d:dr.d, restored:true} : {d:srv, restored:false};
+  },
+  enter() {
     const sid = this.sid;
-    const [v0, r0] = await Promise.all([getDoc(doc(db, 'debate_sessions', sid, 'votes', this.me)), getDoc(doc(db, 'debate_sessions', sid, 'reports', this.me))]);
-    this.myVote = v0.exists() ? v0.data() : null; this.myReport = r0.exists() ? r0.data() : null;
     this.unsub.push(onSnapshot(sref(sid), d => {
       this.s = d.data(); this.role = roleOf(this.s, this.me);
       if (this.s.stage !== this.lastStage) { this.lastStage = this.s.stage; this.render(); }
@@ -805,12 +901,14 @@ const Student = {
         body = `<div class="card" style="text-align:center;padding:30px"><h3>${esc(t.aud)} 투표 중입니다</h3><p class="mute">토론자는 투표하지 않습니다. 잠시 기다려 주세요.</p></div><div id="feeds"></div>`;
       }
     } else if (st.type === 'result') {
-      body = `<div id="verdictBox"></div>` + (r.side !== 'aud' ? this.postReportForm() : `
+      body = `<div id="verdictBox"></div>` + (r.side !== 'aud' ? (this.myReport?.pre ? '' : this.preReportForm(false, true)) + this.postReportForm() : `
         <div class="card"><h3>${esc(t.aud)} 소감</h3><p class="mute">토론을 듣고 새롭게 알게 된 점, 생각의 변화, 양측 논증의 강점과 아쉬운 점을 정리하세요.</p>
           <textarea id="postReport" style="min-height:160px">${esc(this.myReport?.post || '')}</textarea>
           <label>한 줄 느낀점</label><input id="reflection" value="${esc(this.myReport?.reflection || '')}">
           <button style="width:100%;margin-top:10px" onclick="Student.savePost()">저장</button></div>`);
     }
+    if (r.side !== 'aud' && ['debate', 'ready', 'post'].includes(st.type))
+      body += `<div class="card row" style="cursor:pointer" onclick="location.href='?s=${this.sid}&r=1'"><span class="grow">📄 1차(사전) 보고서 ${this.myReport?.pre ? '<span class="badge gold">제출 완료 ✅</span>' : '<span class="badge">미제출</span>'}</span><span class="mute">열기 ›</span></div>`;
     app.innerHTML = this.header() + `<div class="wrap">${this.stageBar()}${body}</div>`;
     Object.entries(keep).forEach(([id, v]) => { const el = document.getElementById(id); if (el) el.value = v; });
     if (keepStance) { const b = document.querySelector(`#stance button[data-k="${keepStance}"]`); if (b) this.pick(b); }
@@ -822,14 +920,17 @@ const Student = {
       ta.oninput = () => { if (!ta.value.trim()) this.recFrom = null; else if (!this.recFrom) this.recFrom = STAGES[this.s.stage].key; };
     }
   },
-  preReportForm(early) {
-    const rp = this.myReport || {}, done = !!rp.pre;
+  preReportForm(early, late) {
+    const rp = this.myReport || {}, done = !!rp.pre, dr = this.draftOr('r1', rp.r1, rp.r1Ts);
     const side = this.role.side === 'pro' ? '찬성' : '반대';
     return `<div class="card side-${this.role.side}"><div class="row"><h3 class="grow">찬반 토론 보고서 · 1차: 토론 준비 및 전략 탐색</h3>${done ? '<span class="badge gold">제출 완료 ✅</span>' : '<span class="badge">미제출</span>'}</div>
       <p class="mute">주제: ${esc(this.s.title)} · <b>${side}</b> · 학번·이름·날짜는 자동으로 기록됩니다.<br>
-      ${early ? '토론 전까지 미리 작성하세요. 같은 진영 친구와 의논은 해도 되지만 <b>보고서는 각자 자기 말로</b> 씁니다. 저장 후에도 언제든 고칠 수 있어요.'
-              : (done ? '미리 제출한 보고서입니다. 토론 전에 한 번 더 읽어 보세요.' : '아직 제출하지 않았어요.')}</p>
-      ${reportFormHTML(REPORT1, rp.r1, 'r1')}
+      ${late ? '아직 1차 보고서를 내지 않았어요. 2차 보고서와 함께 지금 작성하세요.'
+              : early ? '미리 작성하세요. 같은 진영 친구와 의논은 해도 되지만 <b>보고서는 각자 자기 말로</b> 씁니다. 제출 후에도 언제든 고칠 수 있어요.'
+              : (done ? '미리 제출한 보고서입니다. 토론 전에 한 번 더 읽어 보세요.' : '아직 제출하지 않았어요.')}<br>
+      💻 PC에서도 같은 주소로 들어와 학번을 넣으면 쓸 수 있어요. 다른 기기에서 이어 쓰려면 먼저 [임시 저장]을 누르세요.</p>
+      ${dr.restored ? '<p class="ai" style="font-size:14px">✏️ 이 기기에 자동 저장된 내용을 불러왔어요. 아직 선생님께 보이지 않으니 [임시 저장]이나 [제출]을 눌러 주세요.</p>' : ''}
+      ${reportFormHTML(REPORT1, dr.d, 'r1')}
       <div class="row" style="margin-top:14px"><button class="ghost grow" onclick="Student.saveR1(true)">임시 저장</button><button class="grow" onclick="Student.saveR1(false)">${done ? '수정 제출' : '제출'}</button></div></div>`;
   },
   async saveR1(draft) {
@@ -838,18 +939,19 @@ const Student = {
     const data = {r1:d, r1Ts:Date.now()};
     if (!draft) data.pre = reportText(REPORT1, d);
     await setDoc(doc(db, 'debate_sessions', this.sid, 'reports', this.me), data, {merge:true});
-    this.myReport = {...(this.myReport || {}), ...data};
-    toast(draft ? '임시 저장했습니다 (아직 제출 전)' : '제출했습니다 ✅'); if (!draft) this.render();
+    this.myReport = {...(this.myReport || {}), ...data}; clearTimeout(this._as); Draft.del(this.sid, this.me, 'r1');
+    toast(draft ? '임시 저장했습니다 (아직 제출 전)' : '제출했습니다 ✅'); if (!draft) this.redraw();
   },
   postReportForm() {
-    const rp = this.myReport || {}, done = !!rp.post;
-    const d = {...(rp.r2 || {})};
+    const rp = this.myReport || {}, done = !!rp.post, dr = this.draftOr('r2', rp.r2, rp.r2Ts);
+    const d = {...(dr.d || {})}, refl = dr.restored ? (d._reflection ?? '') : (rp.reflection || '');
     if (!d.role && rp.r1?.role) d.role = rp.r1.role;            // 1차 내용을 처음 값으로 채움
     if (!d.contrib && rp.r1?.contrib) d.contrib = rp.r1.contrib;
     return `<div class="card side-${this.role.side}"><div class="row"><h3 class="grow">찬반 토론 보고서 · 2차: 토론 마무리 입장 정리</h3>${done ? '<span class="badge gold">제출 완료 ✅</span>' : '<span class="badge">미제출</span>'}</div>
       <p class="mute">역할과 기여 부분은 1차 보고서 내용으로 미리 채워 두었어요. 실제 토론에서 한 일에 맞게 고치세요.</p>
+      ${dr.restored ? '<p class="ai" style="font-size:14px">✏️ 이 기기에 자동 저장된 내용을 불러왔어요. 아직 선생님께 보이지 않으니 [임시 저장]이나 [제출]을 눌러 주세요.</p>' : ''}
       ${reportFormHTML(REPORT2, d, 'r2')}
-      <label>한 줄 느낀점</label><input id="reflection" value="${esc(rp.reflection || '')}">
+      <label>한 줄 느낀점</label><input id="reflection" value="${esc(refl)}">
       <div class="row" style="margin-top:14px"><button class="ghost grow" onclick="Student.saveR2(true)">임시 저장</button><button class="grow" onclick="Student.saveR2(false)">${done ? '수정 제출' : '제출'}</button></div></div>`;
   },
   async saveR2(draft) {
@@ -858,8 +960,8 @@ const Student = {
     const data = {r2:d, r2Ts:Date.now(), reflection:$('#reflection').value.trim()};
     if (!draft) { data.post = reportText(REPORT2, d); data.postTs = Date.now(); }
     await setDoc(doc(db, 'debate_sessions', this.sid, 'reports', this.me), data, {merge:true});
-    this.myReport = {...(this.myReport || {}), ...data};
-    toast(draft ? '임시 저장했습니다 (아직 제출 전)' : '제출했습니다 ✅'); if (!draft) this.render();
+    this.myReport = {...(this.myReport || {}), ...data}; clearTimeout(this._as); Draft.del(this.sid, this.me, 'r2');
+    toast(draft ? '임시 저장했습니다 (아직 제출 전)' : '제출했습니다 ✅'); if (!draft) this.redraw();
   },
   update() {
     const c = $('#caption');
@@ -1015,7 +1117,7 @@ const Board = {
       <button class="ghost sm" onclick="Board.timerAdd(60)">+1분</button><button class="ghost sm" onclick="Board.timerAdd(-60)">-1분</button><button class="ghost sm" onclick="Board.timerReset()">↺</button><span class="sep"></span>` : ''}
       ${st.type === 'result' ? `<button class="ghost sm" id="vbtn" onclick="Board.makeVerdict()">🤖 ${esc(T(this.s).doc)} 다시 생성</button>
         <button class="con sm" onclick="Board.endDebate()">🏁 토론 종료</button>` : ''}
-      <span id="failbox" class="row" style="gap:6px"></span><span id="voicebox"></span>
+      <span id="aibox" class="row" style="gap:6px"></span><span id="failbox" class="row" style="gap:6px"></span><span id="voicebox"></span>
       <span class="sep"></span>
       <button class="gold sm" id="mentbtn" onclick="Board.ment()" title="스페이스바">▶ 멘트 시작</button>
       <button class="ghost sm" id="vtoggle" onclick="Board.voiceToggle()">${TTS.on() ? '🔈 음성 끄기' : '🔇 음성 켜기'}</button>
@@ -1079,7 +1181,7 @@ const Board = {
       main.innerHTML = `<div class="two" style="grid-template-columns:1fr 1.6fr">
         <div class="col"><h3>투표 결과</h3>${barsHTML(stt)}<p style="font-size:22px;margin-top:16px"><b>${esc(winnerText(s, stt))}</b></p>
           <div class="mute" style="font-size:17px">${Object.entries(stt.moves).map(([k, v]) => `${k}: ${v}명`).join('<br>') || '입장 이동 없음'}</div></div>
-        <div class="col"><h3>${esc(t.doc)}</h3>${s.verdict ? `<div class="verdict">${esc(s.verdict.full)}</div>` : `<p class="mute">🤖 ${esc(t.doc)}을 작성하는 중입니다… (10~20초)</p>`}</div></div>`;
+        <div class="col"><h3>${esc(t.doc)}</h3>${s.verdict ? `<div class="verdict">${esc(s.verdict.full)}</div>` : `<p class="mute">🤖 ${esc(t.doc)}을 작성하는 중입니다… <span id="vdel"></span></p>`}</div></div>`;
     }
     const fb = $('#failbox');
     if (fb) fb.innerHTML = Object.entries(s.aiFail || {}).filter(([, v]) => v).map(([k]) =>
@@ -1096,7 +1198,18 @@ const Board = {
     const el = $('#qr'); if (!el || !window.QRCode) return;
     el.innerHTML = ''; new QRCode(el, {text:studentUrl(this.sid), width:size, height:size});
   },
+  // AI 작업 경과 시간 표시: 시작할 때 등록, 끝나면 지움
+  aiJobs:{},
+  aiRun(key, label, job) {
+    this.aiJobs[key] = {label, t0:Date.now()};
+    return job().finally(() => { delete this.aiJobs[key]; this.paintAI(); });
+  },
+  paintAI() {
+    const box = $('#aibox'); if (box) box.innerHTML = Object.values(this.aiJobs).map(j => `<span class="aibusy">🤖 ${esc(j.label)} 중… ${Math.floor((Date.now() - j.t0) / 1000)}초</span>`).join('');
+    const vd = $('#vdel'), j = this.aiJobs.verdict; if (vd) vd.textContent = j ? `${Math.floor((Date.now() - j.t0) / 1000)}초` : '';
+  },
   tick() {
+    this.paintAI();
     const el = $('#btimer'); if (!el || !this.s) return;
     const st = STAGES[this.s.stage];
     if (!st.min) { el.textContent = ''; return; }
@@ -1128,18 +1241,18 @@ const Board = {
     const idx = STAGES.findIndex(x => x.key === key);
     const recs = this.records.filter(x => x.stage === key);
     if (!recs.length) return;
-    try {
+    return this.aiRun(key, (SHORT[key] || stageName(this.s, idx)) + ' 정리', async () => { try {
       const out = await gemini(stagePrompt(this.s, idx, recs));
       await updateDoc(sref(this.sid), {[`ai.${key}`]:{pro:out.pro || [], con:out.con || [], judge:out.judge || '', ts:Date.now()}, [`aiFail.${key}`]:false});
-    } catch (e) { await updateDoc(sref(this.sid), {[`aiFail.${key}`]:true}); toast(`${stageName(this.s, idx)} 정리 실패: ${e.message}`, 5000); }
+    } catch (e) { await updateDoc(sref(this.sid), {[`aiFail.${key}`]:true}); toast(`${stageName(this.s, idx)} 정리 실패: ${e.message}`, 5000); } });
   },
   async makeOverview() {
     const recs = this.records.filter(x => BEFORE_READY.includes(x.stage));
     if (!recs.length) { await updateDoc(sref(this.sid), {overview:{pro:[], con:[], open:['서기 기록이 없어 쟁점을 정리하지 못했습니다.'], ts:Date.now()}}); return; }
-    try {
+    return this.aiRun('overview', '쟁점 정리', async () => { try {
       const out = await gemini(overviewPrompt(this.s, recs));
       await updateDoc(sref(this.sid), {overview:{pro:out.pro || [], con:out.con || [], open:out.open || [], ts:Date.now()}, 'aiFail.overview':false});
-    } catch (e) { await updateDoc(sref(this.sid), {'aiFail.overview':true}); toast('쟁점 정리 실패: ' + e.message, 5000); }
+    } catch (e) { await updateDoc(sref(this.sid), {'aiFail.overview':true}); toast('쟁점 정리 실패: ' + e.message, 5000); } });
   },
   retry(key) { if (!this.can()) return; if (key === 'overview') this.makeOverview(); else if (key === 'verdict') this.makeVerdict(); else this.summarize(key); },
   async endDebate() {
@@ -1184,7 +1297,7 @@ const Board = {
     if (!this.can()) return;
     if (this.busy) return; this.busy = true;
     const btn = $('#vbtn'); if (btn) { btn.disabled = true; btn.textContent = '🤖 작성 중…'; }
-    try {
+    await this.aiRun('verdict', T(this.s).doc + ' 작성', async () => { try {
       const bundle = await loadSessionBundle(this.sid);
       const stt = voteStats(this.s, bundle.votes, this.cls);
       if (!stt.paired) throw new Error('사전·사후 모두 투표한 학생이 없습니다.');
@@ -1194,7 +1307,7 @@ const Board = {
       if (this.s.stage !== STAGES.length - 1) { upd.stage = STAGES.length - 1; upd.timer = {running:false, endsAt:null, remaining:STAGES[STAGES.length - 1].min * 60}; }
       upd['aiFail.verdict'] = false;
       await updateDoc(sref(this.sid), upd);
-    } catch (e) { toast(e.message, 6000); try { await updateDoc(sref(this.sid), {'aiFail.verdict':true}); } catch {} }
+    } catch (e) { toast(e.message, 6000); try { await updateDoc(sref(this.sid), {'aiFail.verdict':true}); } catch {} } });
     this.busy = false; if (btn) { btn.disabled = false; btn.textContent = `🤖 ${T(this.s).doc} 다시 생성`; }
   },
 };
@@ -1374,7 +1487,7 @@ const Admin = {
   showQR(id) {
     const box = $('#qrbox');
     box.innerHTML = `<div class="card" style="text-align:center"><div id="qrc" style="display:inline-block;background:#fff;padding:12px"></div><p class="mute" style="word-break:break-all">${esc(studentUrl(id))}</p><button class="ghost sm" onclick="navigator.clipboard.writeText('${studentUrl(id)}');">링크 복사</button></div>`;
-    new QRCode($('#qrc'), {text:studentUrl(id), width:220, height:220});
+    if (window.QRCode) new QRCode($('#qrc'), {text:studentUrl(id), width:220, height:220}); else $('#qrc').textContent = 'QR 도구를 불러오는 중입니다. 잠시 후 다시 누르세요.';
     box.scrollIntoView({behavior:'smooth'});
   },
   /* ---------- 기록·결과 ---------- */
@@ -1568,9 +1681,9 @@ const Admin = {
     return `<div class="card"><h2>AI (Gemini) 설정</h2>
       <p class="mute">키는 이 기기의 브라우저에만 저장됩니다. 진행 화면을 띄울 노트북에서 설정하세요.</p>
       <label>Gemini API 키</label><input id="gk" type="password" value="${esc(LS.get('gemini_key', ''))}" placeholder="AIza...">
-      <label>모델</label><input id="gm" list="gmodels" value="${esc(LS.get('gemini_model', 'gemini-3.8-flash'))}">
-      <datalist id="gmodels"><option value="gemini-3.8-flash"><option value="gemini-3.6-flash"><option value="gemini-3.5-flash-lite"></datalist>
-      <p class="mute">기본값 gemini-3.8-flash. 무료 사용량 한도에 자주 걸리면 gemini-3.5-flash-lite로 바꿔 보세요.</p>
+      <label>모델</label><input id="gm" list="gmodels" value="${esc(LS.get('gemini_model', DEFAULT_MODEL))}">
+      <datalist id="gmodels"><option value="gemini-3.5-flash-lite"><option value="gemini-3.6-flash"><option value="gemini-3.8-flash"></datalist>
+      <p class="mute">기본값 gemini-3.5-flash-lite (빠름, 몇 초). 정리 품질을 더 높이고 싶으면 gemini-3.6-flash나 gemini-3.8-flash로 바꿀 수 있지만 더 오래 걸립니다.</p>
       <div class="row" style="margin-top:12px"><button onclick="Admin.saveAI()">저장</button><button class="ghost" onclick="Admin.testAI(this)">연결 테스트</button></div></div>
       <div class="card"><h2>음성 (판사 멘트)</h2>
       <label><input type="checkbox" id="von" style="width:auto" ${TTS.on() ? 'checked' : ''}> 진행 화면에서 음성으로 읽기</label>
@@ -1580,10 +1693,11 @@ const Admin = {
       <label>속도: <span id="vrv">${LS.get('voice_rate', '1')}</span></label><input type="range" id="vrate" min="0.7" max="1.4" step="0.05" value="${LS.get('voice_rate', '1')}" oninput="$('#vrv').textContent=this.value">
       <div class="row" style="margin-top:12px"><button onclick="Admin.saveVoice()">저장</button><button class="ghost" onclick="Admin.saveVoice();TTS.speak('지금부터 찬반토론을 시작하겠습니다. 찬성 측의 입장 발표를 들어 보겠습니다.')">들어보기</button></div></div>`;
   },
-  saveAI() { LS.set('gemini_key', $('#gk').value.trim()); LS.set('gemini_model', $('#gm').value.trim() || 'gemini-3.8-flash'); toast('저장했습니다'); },
+  saveAI() { LS.set('gemini_key', $('#gk').value.trim()); LS.set('gemini_model', $('#gm').value.trim() || DEFAULT_MODEL); toast('저장했습니다'); },
   async testAI(btn) {
     this.saveAI(); btn.disabled = true; btn.textContent = '테스트 중…';
-    try { const r = await gemini('"연결 성공"이라고만 답하라.', false); toast('✅ ' + r.slice(0, 40)); } catch (e) { toast('❌ ' + e.message, 6000); }
+    const t0 = Date.now();
+    try { const r = await gemini('"연결 성공"이라고만 답하라.', false); toast(`✅ ${r.slice(0, 40)} (${((Date.now() - t0) / 1000).toFixed(1)}초)`); } catch (e) { toast('❌ ' + e.message, 6000); }
     btn.disabled = false; btn.textContent = '연결 테스트';
   },
   saveVoice() { LS.set('auto_ment', $('#vauto').checked ? '1' : '0'); LS.set('voice', $('#von').checked ? '1' : '0'); LS.set('voice_name', $('#vname').value); LS.set('voice_rate', $('#vrate').value); toast('저장했습니다'); },
