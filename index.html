@@ -1053,6 +1053,8 @@ const Board = {
     });
     setInterval(() => { if (this.isCtl) setDoc(this.ctlRef(), {id:this.TAB, ts:Date.now()}).catch(() => {}); }, 10000);
     addEventListener('pagehide', () => { if (this.isCtl) deleteDoc(this.ctlRef()).catch(() => {}); });
+    // AI 정리가 진행 중이면 창을 닫거나 새로고침할 때 브라우저 경고 (정리는 이 창에서 저장되므로)
+    addEventListener('beforeunload', e => { if (this.aiBusy()) { e.preventDefault(); e.returnValue = ''; } });
   },
   claim() { return setDoc(this.ctlRef(), {id:this.TAB, ts:Date.now()}).catch(e => toast('조작권 가져오기 실패: ' + e.message)); },
   takeOver() { if (confirm('다른 탭(기기)의 진행을 멈추고 여기서 진행할까요?')) this.claim(); },
@@ -1181,7 +1183,7 @@ const Board = {
       main.innerHTML = `<div class="two" style="grid-template-columns:1fr 1.6fr">
         <div class="col"><h3>투표 결과</h3>${barsHTML(stt)}<p style="font-size:22px;margin-top:16px"><b>${esc(winnerText(s, stt))}</b></p>
           <div class="mute" style="font-size:17px">${Object.entries(stt.moves).map(([k, v]) => `${k}: ${v}명`).join('<br>') || '입장 이동 없음'}</div></div>
-        <div class="col"><h3>${esc(t.doc)}</h3>${s.verdict ? `<div class="verdict">${esc(s.verdict.full)}</div>` : `<p class="mute">🤖 ${esc(t.doc)}을 작성하는 중입니다… <span id="vdel"></span></p>`}</div></div>`;
+        <div class="col"><h3>${esc(t.doc)}</h3>${s.verdict ? `<div class="verdict">${esc(s.verdict.full)}</div>` : `<p class="mute" id="vdmsg">${this.verdictWait()}</p>`}</div></div>`;
     }
     const fb = $('#failbox');
     if (fb) fb.innerHTML = Object.entries(s.aiFail || {}).filter(([, v]) => v).map(([k]) =>
@@ -1192,7 +1194,17 @@ const Board = {
     const el = $('#voicebox'); if (!el) return;
     el.innerHTML = this.voiceFail ? `<span class="badge con" style="font-size:13px">🔇 음성이 중단되었습니다 (${esc(this.voiceFail)}) — [▶ 멘트 시작]으로 다시 읽거나, 직접 안내 후 [▶ 타이머 시작]을 누르세요</span>` : '';
   },
-  exit() { TTS.stop(); if (this.isCtl) deleteDoc(this.ctlRef()).catch(() => {}); location.href = location.pathname + '#admin'; setTimeout(() => location.reload(), 50); },
+  aiBusy() { return Object.keys(this.aiJobs).length > 0; },
+  // 판정문 자리 안내: 실제로 만드는 중일 때만 '작성 중'(경과 초), 아무것도 안 돌고 있으면 버튼을 누르라고 안내
+  verdictWait() {
+    const doc = T(this.s).doc, j = this.aiJobs.verdict;
+    if (j) return `🤖 ${esc(doc)}을 작성하는 중입니다… ${Math.floor((Date.now() - j.t0) / 1000)}초`;
+    if (IS_TEACHER && this.isCtl) return `${this.s.aiFail?.verdict ? '⚠ ' + esc(doc) + ' 만들기에 실패했어요. ' : esc(doc) + '이 아직 없습니다. '}아래 <b>[🤖 ${esc(doc)} 다시 생성]</b>을 눌러 만드세요. (판정 단계로 넘어간 뒤 진행 화면을 새로 열었거나 다른 창에서 넘겼으면 자동으로 만들지 않아요)`;
+    return `🤖 ${esc(doc)}을 기다리는 중입니다…`;
+  },
+  exit() {
+    if (this.aiBusy() && !confirm(`🤖 아직 AI가 정리하고 있어요 (${Object.values(this.aiJobs).map(j => j.label).join(', ')}).\n보통 몇 초면 끝나요. 지금 나가면 이 정리는 저장되지 않아요.\n\n그래도 나갈까요? (취소를 누르면 기다립니다)`)) return;
+    TTS.stop(); if (this.isCtl) deleteDoc(this.ctlRef()).catch(() => {}); location.href = location.pathname + '#admin'; setTimeout(() => location.reload(), 50); },
   fullscreen() { if (document.fullscreenElement) document.exitFullscreen(); else document.documentElement.requestFullscreen?.(); },
   drawQR(size) {
     const el = $('#qr'); if (!el || !window.QRCode) return;
@@ -1205,8 +1217,8 @@ const Board = {
     return job().finally(() => { delete this.aiJobs[key]; this.paintAI(); });
   },
   paintAI() {
-    const box = $('#aibox'); if (box) box.innerHTML = Object.values(this.aiJobs).map(j => `<span class="aibusy">🤖 ${esc(j.label)} 중… ${Math.floor((Date.now() - j.t0) / 1000)}초</span>`).join('');
-    const vd = $('#vdel'), j = this.aiJobs.verdict; if (vd) vd.textContent = j ? `${Math.floor((Date.now() - j.t0) / 1000)}초` : '';
+    const box = $('#aibox'); if (box) box.innerHTML = Object.values(this.aiJobs).map(j => `<span class="aibusy" title="끝날 때까지 이 창을 닫지 마세요">🤖 ${esc(j.label)} 중… ${Math.floor((Date.now() - j.t0) / 1000)}초 · 창 닫지 마세요</span>`).join('');
+    const vm = $('#vdmsg'); if (vm) { const h = this.verdictWait(); if (vm.innerHTML !== h) vm.innerHTML = h; }
   },
   tick() {
     this.paintAI();
@@ -1235,7 +1247,7 @@ const Board = {
     // 끝난 단계는 뒤에서 자동 정리 (낭독 없음)
     if (STAGES[from].type === 'debate') this.summarize(STAGES[from].key);
     if (st.type === 'ready') this.makeOverview();
-    if (st.type === 'result') setTimeout(() => this.makeVerdict(), 6000);   // 판정 멘트를 먼저 읽고 판정문 생성
+    if (st.type === 'result') { this.aiJobs.verdict = {label:T(this.s).doc + ' 준비', t0:Date.now()}; setTimeout(() => { delete this.aiJobs.verdict; this.makeVerdict(); }, 6000); }   // 판정 멘트를 먼저 읽고 판정문 생성
   },
   async summarize(key) {
     const idx = STAGES.findIndex(x => x.key === key);
@@ -1518,6 +1530,7 @@ const Admin = {
         <div class="row" style="margin-top:8px">
           <button class="ghost sm" onclick="Admin.exAll(false)">📋 전체 기록 복사</button>
           <button class="ghost sm" onclick="Admin.exAll(true)">⬇ 텍스트 파일 저장</button>
+          <button class="ghost sm" onclick="Admin.exExcel(this)">📊 엑셀로 저장</button>
           <button class="ghost sm" onclick="Admin.exOverview()">📋 쟁점 정리 요청문 복사</button>
           <button class="ghost sm" onclick="Admin.exVerdict()">📋 ${t.doc} 요청문 복사</button></div>
         <label>쟁점 정리 직접 입력</label><textarea id="ovManual" placeholder="찬성 측 핵심 / 반대 측 핵심 / 남은 쟁점">${esc(s.overview?.manual || (s.overview ? `찬성 측 핵심: ${(s.overview.pro || []).join(' / ')}\n반대 측 핵심: ${(s.overview.con || []).join(' / ')}\n남은 쟁점: ${(s.overview.open || []).join(' / ')}` : ''))}</textarea>
@@ -1528,13 +1541,48 @@ const Admin = {
       ${s.overview ? `<div class="card"><h3>교차 질의까지의 쟁점 정리</h3>${overviewHTML(s)}</div>` : ''}
       ${stageBlocks}
       <div class="card"><h3>${t.aud} 질문</h3>${b.questions.map(q => `<div>· ${esc(q.text)} <span class="mute">- ${esc(nm[q.no] || '')}</span></div>`).join('') || '<p class="mute">없음</p>'}</div>
-      <div class="card"><h3>학생별 투표·보고서</h3><div style="overflow-x:auto"><table><tr><th>학번</th><th>이름</th><th>역할</th><th>사전</th><th>사후</th><th>보고서·느낀점</th></tr>
+      <div class="card"><div class="row"><h3 class="grow">학생별 투표·보고서</h3><button class="ghost sm noprint" onclick="Admin.exExcel(this)">📊 엑셀로 저장</button></div><div style="overflow-x:auto"><table><tr><th>학번</th><th>이름</th><th>역할</th><th>사전</th><th>사후</th><th>보고서·느낀점</th></tr>
       ${cls.students.map(x => { const v = vm[x.no], rp = b.reports[x.no];
         return `<tr><td>${esc(x.no)}</td><td>${esc(x.name)}</td><td>${esc(roleTxt(x.no))}</td>
         <td>${v?.pre ? `<b>${STANCE[v.pre.stance]}</b> ${esc(v.pre.reason)}` : ''}</td>
         <td>${v?.post ? `<b>${STANCE[v.post.stance]}</b> ${esc(v.post.reason)}${v.post.changeReason ? '<br><span class="mute">변화: ' + esc(v.post.changeReason) + '</span>' : ''}` : ''}</td>
         <td>${rp?.pre ? '<div><span class="mute">사전:</span> ' + esc(String(rp.pre)) + '</div>' : ''}${rp?.post ? '<div><span class="mute">사후:</span> ' + esc(String(rp.post)) + '</div>' : ''}${rp?.reflection ? '<div><span class="mute">느낀점:</span> ' + esc(rp.reflection) + '</div>' : ''}</td></tr>`; }).join('')}
       </table></div></div>`;
+  },
+  // 엑셀 저장: 학생별 투표·보고서 / 1차 보고서 / 2차 보고서 / 서기 기록 / 질문 시트 (실명, 교사만)
+  async exExcel(btn) {
+    if (!window.XLSX) {
+      btn.disabled = true; btn.textContent = '불러오는 중…';
+      try { await new Promise((ok, no) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; sc.onload = ok; sc.onerror = no; document.head.appendChild(sc); }); }
+      catch { toast('엑셀 도구를 불러오지 못했습니다. 인터넷 연결을 확인하세요.'); }
+      btn.disabled = false; btn.textContent = '📊 엑셀로 저장';
+      if (!window.XLSX) return;
+    }
+    const {s, cls, b} = this.printData, t = T(s), nm = nameMap(cls);
+    const vm = Object.fromEntries(b.votes.map(v => [v.no, v]));
+    const roleTxt = no => { const r = roleOf(s, no); return r.side === 'aud' ? t.aud : (r.side === 'pro' ? '찬성' : '반대') + (r.clerk ? '(서기)' : ''); };
+    const day = ts => ts ? new Date(ts).toLocaleString('ko-KR') : '';
+    const qOf = no => b.questions.filter(q => q.no === no).map(q => q.text).join(' / ');
+    const main = cls.students.map(x => { const v = vm[x.no] || {}, rp = b.reports[x.no] || {};
+      return {'학번':x.no, '이름':x.name, '역할':roleTxt(x.no), '접속':b.presence.some(p => p.no === x.no) ? 'O' : '',
+        '사전 입장':v.pre ? STANCE[v.pre.stance] : '', '사전 이유':v.pre?.reason || '', '사후 입장':v.post ? STANCE[v.post.stance] : '', '사후 이유':v.post?.reason || '',
+        '입장 변화 이유':v.post?.changeReason || '', '설득력 있던 논거':v.post?.best || '', '낸 질문':qOf(x.no),
+        '쓴 기록 수':b.records.filter(r => r.by === x.no).length, '1차 보고서':rp.pre ? '제출' : (rp.r1 ? '임시 저장' : ''), '2차 보고서':rp.post ? '제출' : (rp.r2 ? '임시 저장' : ''),
+        '한 줄 느낀점':rp.reflection || '', '청중 소감':roleOf(s, x.no).side === 'aud' ? (rp.post || '') : ''}; });
+    const repSheet = (form, key, tsKey) => [...(s.pro || []), ...(s.con || [])].map(no => { const rp = b.reports[no] || {}, d = rp[key] || {};
+      const row = {'학번':no, '이름':nm[no] || '', '진영':(s.pro || []).includes(no) ? '찬성' : '반대', '상태':(key === 'r1' ? rp.pre : rp.post) ? '제출' : (rp[key] ? '임시 저장' : '미작성'), '저장 시각':day(rp[tsKey])};
+      form.forEach(f => { if (Array.isArray(f)) row[f[1]] = d[f[0]] || ''; });
+      if (key === 'r2') row['한 줄 느낀점'] = rp.reflection || '';
+      return row; });
+    const recs = b.records.map(r => ({'단계':stageName(s, STAGES.findIndex(x => x.key === r.stage)) || r.stage, '진영':r.side === 'pro' ? '찬성' : '반대', '발언자':nm[r.speaker] || '', '기록한 학생':nm[r.by] || '', '내용':r.text, '시각':day(r.ts)}));
+    const qs = b.questions.map(q => ({'학번':q.no, '이름':nm[q.no] || '', '질문':q.text, '시각':day(q.ts)}));
+    const wb = XLSX.utils.book_new(), add = (rows, name, w) => { const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{'내용':'없음'}]); if (w) ws['!cols'] = w.map(x => ({wch:x})); XLSX.utils.book_append_sheet(wb, ws, name); };
+    add(main, '학생별 투표·보고서', [8, 8, 10, 5, 8, 40, 8, 40, 30, 30, 30, 8, 10, 10, 30, 40]);
+    add(repSheet(REPORT1, 'r1', 'r1Ts'), '1차 보고서');
+    add(repSheet(REPORT2, 'r2', 'r2Ts'), '2차 보고서');
+    add(recs, '서기 기록', [24, 6, 8, 10, 60, 20]);
+    add(qs, '청중 질문', [8, 8, 60, 20]);
+    XLSX.writeFile(wb, `${(s.date || '') + ' ' + s.title} 토론 결과.xlsx`.replace(/[\\/:*?"<>|]/g, '_'));
   },
   exAll(file) {
     const {s, cls, b} = this.printData, text = fullRecordText(s, cls, b, $('#exAnon').checked);
