@@ -66,6 +66,9 @@ h1,h2,h3{margin:0 0 8px;line-height:1.3} h2{font-size:20px} h3{font-size:17px}
 .rec .late-tag{display:inline-block;font-size:12px;font-weight:700;color:var(--ink2);background:var(--neu-bg);border-radius:99px;padding:1px 8px;margin-right:6px}
 .late-sep{display:flex;align-items:center;gap:8px;color:var(--mute);font-size:12px;font-weight:700;margin:4px 0}
 .late-sep::before,.late-sep::after{content:'';flex:1;border-top:1px solid var(--line)}
+.sm-topic h4{font-size:15px;margin:14px 0 6px}.sm-sub{font-weight:400;font-size:12px;color:var(--mute)}
+.sm-t th,.sm-t td{border:1px solid var(--line);white-space:pre-wrap}.sm-t th{width:28%}.sm-t th.sec{background:#eef0f5;width:auto}
+details.card>summary{list-style:none}details.card>summary::-webkit-details-marker{display:none}
 .aibusy{font-size:13px;font-weight:700;color:#8a6a1c;background:#f7efd9;border-radius:99px;padding:4px 10px}
 .side-pro{border-top:4px solid var(--pro)} .side-con{border-top:4px solid var(--con)}
 .ai{background:#fbf8ef;border:1px solid #eadbb0;border-radius:10px;padding:10px 12px;font-size:15px}
@@ -1340,7 +1343,7 @@ const Admin = {
   cls(id) { return this.classes.find(c => c.id === id); },
   setTab(t) { this.tab = t; this.edit = null; this.render(); },
   render() {
-    const tabs = [['sessions', '토론 회차'], ['classes', '학급 명단'], ['results', '기록·결과'], ['record', '생기부'], ['settings', '설정']];
+    const tabs = [['sessions', '토론 회차'], ['classes', '학급 명단'], ['results', '기록·결과'], ['students', '학생별 모음'], ['record', '생기부'], ['settings', '설정']];
     app.innerHTML = `<div class="top noprint"><div class="wrap"><b class="grow">⚖️ 토론법정 · 관리</b><span style="font-size:13px;opacity:.8">${esc(USER.email || '')}</span><button class="ghost sm" onclick="teacherLogout()">로그아웃</button></div></div>
     <div class="wrap"><div class="tabs noprint">${tabs.map(([k, v]) => `<button class="${this.tab === k ? 'on' : ''}" onclick="Admin.setTab('${k}')">${v}</button>`).join('')}</div><div id="tabbody"></div></div>`;
     const body = $('#tabbody');
@@ -1348,6 +1351,7 @@ const Admin = {
     if (this.tab === 'classes') body.innerHTML = this.edit ? this.classForm() : this.classList();
     if (this.tab === 'results') this.renderResults(body);
     if (this.tab === 'record') this.renderRecord(body);
+    if (this.tab === 'students') this.renderStudents(body);
     if (this.tab === 'settings') body.innerHTML = this.settingsHTML();
     if (this.tab === 'sessions' && this.edit) this.bindSessionForm();
   },
@@ -1550,14 +1554,16 @@ const Admin = {
       </table></div></div>`;
   },
   // 엑셀 저장: 학생별 투표·보고서 / 1차 보고서 / 2차 보고서 / 서기 기록 / 질문 시트 (실명, 교사만)
+  async loadXLSX(btn) {
+    if (window.XLSX) return true;
+    const label = btn.textContent; btn.disabled = true; btn.textContent = '불러오는 중…';
+    try { await new Promise((ok, no) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; sc.onload = ok; sc.onerror = no; document.head.appendChild(sc); }); }
+    catch { toast('엑셀 도구를 불러오지 못했습니다. 인터넷 연결을 확인하세요.'); }
+    btn.disabled = false; btn.textContent = label;
+    return !!window.XLSX;
+  },
   async exExcel(btn) {
-    if (!window.XLSX) {
-      btn.disabled = true; btn.textContent = '불러오는 중…';
-      try { await new Promise((ok, no) => { const sc = document.createElement('script'); sc.src = 'https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js'; sc.onload = ok; sc.onerror = no; document.head.appendChild(sc); }); }
-      catch { toast('엑셀 도구를 불러오지 못했습니다. 인터넷 연결을 확인하세요.'); }
-      btn.disabled = false; btn.textContent = '📊 엑셀로 저장';
-      if (!window.XLSX) return;
-    }
+    if (!await this.loadXLSX(btn)) return;
     const {s, cls, b} = this.printData, t = T(s), nm = nameMap(cls);
     const vm = Object.fromEntries(b.votes.map(v => [v.no, v]));
     const roleTxt = no => { const r = roleOf(s, no); return r.side === 'aud' ? t.aud : (r.side === 'pro' ? '찬성' : '반대') + (r.clerk ? '(서기)' : ''); };
@@ -1630,6 +1636,111 @@ const Admin = {
       th{background:#f1f2f4;width:34%;font-weight:700}th.sec{background:#e4e6ea;width:auto}.h{font-weight:400;font-size:11px;color:#555;margin-top:2px}td{white-space:pre-wrap}
       @media screen{body{background:#ddd}section{background:#fff;max-width:210mm;margin:10px auto}}</style></head><body>${pages}<script>window.onload=()=>window.print()<\/script></body></html>`);
     w.document.close();
+  },
+  /* ---------- 학생별 모음: 한 학생의 모든 토론(토론자·청중)을 모아 보기·인쇄·엑셀 ---------- */
+  async renderStudents(body) {
+    if (!this.classes.length) { body.innerHTML = '<div class="card mute">학급이 없습니다.</div>'; return; }
+    const cid = this.sumClass || this.classes[0].id;
+    body.innerHTML = `<div class="card row noprint"><select id="sms" class="grow">${this.classes.map(c => `<option value="${c.id}" ${c.id === cid ? 'selected' : ''}>${esc(c.year + ' ' + c.name)}</option>`).join('')}</select>
+      <button class="ghost" onclick="Admin.sumData=null;Admin.renderStudents($('#tabbody'))">↻ 새로 불러오기</button>
+      <button class="ghost" onclick="Admin.printStudents()">🖨 반 전체 인쇄</button><button class="ghost" onclick="Admin.exStudents(this)">📊 엑셀로 저장</button></div>
+      <p class="mute">이 반에서 한 모든 토론을 학생별로 모았습니다. 토론자로 참여한 주제는 1차·2차 보고서, 본인 발언, 우리 팀 전체 기록(본인 발언은 굵게)을, 청중으로 참여한 주제는 사전·사후 투표와 질문을 보여 줍니다. 인쇄는 학생마다 한 장씩 나뉩니다.</p>
+      <div id="smbody" class="card mute">불러오는 중…</div>`;
+    $('#sms').onchange = ev => { this.sumClass = ev.target.value; this.sumData = null; this.renderStudents(body); };
+    if (!this.sumData || this.sumData.cid !== cid) {
+      const sess = this.sessions.filter(s => s.classId === cid).sort((a, b) => (a.date || '').localeCompare(b.date || '') || (a.createdAt || 0) - (b.createdAt || 0));
+      const list = await Promise.all(sess.map(s => loadSessionBundle(s.id)));
+      this.sumData = {cid, sess, bundles:Object.fromEntries(sess.map((s, i) => [s.id, list[i]]))};
+    }
+    const cls = this.cls(cid);
+    $('#smbody').className = '';
+    $('#smbody').innerHTML = cls.students.map(x => { const sm = this.studentSum(x.no);
+      return `<details class="card"><summary class="row" style="cursor:pointer"><b class="grow">${esc(x.no)} ${esc(x.name)}</b><span class="mute">토론자 ${sm.deb.length} · 청중 ${sm.aud.length}</span>
+        <button class="ghost sm" onclick="event.preventDefault();Admin.printStudents('${x.no}')">🖨 인쇄</button></summary><div style="margin-top:10px">${this.studentHTML(x.no)}</div></details>`; }).join('') || '<p class="mute">명단이 없습니다.</p>';
+  },
+  // 한 학생의 모든 토론 자료 모으기
+  studentSum(no) {
+    const {sess, bundles} = this.sumData, deb = [], aud = [];
+    sess.forEach(s => {
+      const b = bundles[s.id], r = roleOf(s, no), t = T(s);
+      const v = b.votes.find(x => x.no === no) || {}, rp = b.reports[no] || {}, qs = b.questions.filter(q => q.no === no).map(q => q.text);
+      if (r.side === 'aud') aud.push({s, t, v, qs, rp});
+      else deb.push({s, t, r, rp, qs,
+        own: b.records.filter(x => x.speaker === no),
+        team: b.records.filter(x => x.side === r.side),
+        wrote: b.records.filter(x => x.by === no).length});
+    });
+    return {deb, aud};
+  },
+  studentHTML(no) {
+    const cls = this.cls(this.sumData.cid), nm = nameMap(cls), sm = this.studentSum(no);
+    const stg = (s, k) => stageName(s, STAGES.findIndex(x => x.key === k)) || k;
+    const vote = x => x ? `<b>${STANCE[x.stance]}</b> ${esc(x.reason || '')}` : '<span class="mute">없음</span>';
+    const form = (f, d) => f.filter(Array.isArray).map(q => `<tr><th>${esc(q[1])}</th><td>${esc(d?.[q[0]] || '')}</td></tr>`).join('');
+    const deb = sm.deb.map(({s, t, r, rp, own, team, wrote}) => `<div class="sm-topic">
+      <h4>■ ${esc(s.title)} <span class="sm-sub">${esc(s.date || '')} · ${esc(t.name)} · ${r.side === 'pro' ? '찬성' : '반대'} 측 토론자${r.clerk ? ' (서기)' : ''}</span></h4>
+      <table class="sm-t"><tr><th colspan="2" class="sec">1차(사전) 보고서 · ${rp.pre ? '제출' : rp.r1 ? '임시 저장' : '미작성'}</th></tr>${form(REPORT1, rp.r1)}
+      <tr><th colspan="2" class="sec">2차(사후) 보고서 · ${rp.post ? '제출' : rp.r2 ? '임시 저장' : '미작성'}</th></tr>${form(REPORT2, rp.r2)}<tr><th>한 줄 느낀점</th><td>${esc(rp.reflection || '')}</td></tr>
+      <tr><th colspan="2" class="sec">본인 발언 (서기 기록 중 발언자가 본인인 것) · ${own.length}건${wrote ? ` · 본인이 올린 기록 ${wrote}건${r.clerk ? '(서기)' : '(보충)'}` : ''}</th></tr>
+      ${own.map(x => `<tr><th>${esc(stg(s, x.stage))}</th><td>${esc(x.text)}${x.by && x.by !== no ? ` <span class="sm-sub">(기록: ${esc(nm[x.by] || x.by)})</span>` : ''}</td></tr>`).join('') || '<tr><td colspan="2" class="sm-sub">없음</td></tr>'}
+      <tr><th colspan="2" class="sec">우리 팀 전체 기록 (굵은 글씨 = 본인 발언)</th></tr>
+      ${team.map(x => `<tr><th>${esc(stg(s, x.stage))}</th><td>${x.speaker === no ? '<b>' : ''}${esc(nm[x.speaker] || '-')}: ${esc(x.text)}${x.speaker === no ? '</b>' : ''}</td></tr>`).join('') || '<tr><td colspan="2" class="sm-sub">없음</td></tr>'}
+      </table></div>`).join('');
+    const aud = sm.aud.length ? `<div class="sm-topic"><h4>■ 청중으로 참여한 토론</h4><table class="sm-t">
+      <tr><th style="width:24%">주제</th><th>사전 투표</th><th>사후 투표</th><th>질문</th></tr>
+      ${sm.aud.map(({s, v, qs, rp}) => `<tr><td><b>${esc(s.title)}</b><div class="sm-sub">${esc(s.date || '')}</div></td><td>${vote(v.pre)}</td>
+        <td>${vote(v.post)}${v.post?.changeReason ? `<div class="sm-sub">바뀐 이유: ${esc(v.post.changeReason)}</div>` : ''}${v.post?.best ? `<div class="sm-sub">설득력 있던 논거: ${esc(v.post.best)}</div>` : ''}${rp.post || rp.reflection ? `<div class="sm-sub">소감: ${esc(rp.post || '')} ${esc(rp.reflection || '')}</div>` : ''}</td>
+        <td>${qs.map(esc).join('<br>') || '<span class="sm-sub">없음</span>'}</td></tr>`).join('')}</table></div>` : '';
+    return (deb || aud) ? deb + aud : '<p class="mute">이 반 토론에 참여한 기록이 없습니다.</p>';
+  },
+  printStudents(only) {
+    const cls = this.cls(this.sumData.cid), list = cls.students.filter(x => !only || x.no === only);
+    const pages = list.map(x => `<section><h1>${esc(x.no)} ${esc(x.name)} · 토론 활동 모음</h1><p class="sm-sub" style="text-align:center">${esc(cls.year + '학년도 ' + cls.name)}</p>${this.studentHTML(x.no)}</section>`).join('');
+    const w = window.open('', '_blank');
+    w.document.write(`<!doctype html><html lang="ko"><head><meta charset="utf-8"><title>${only ? esc(only) + ' ' : ''}토론 활동 모음</title>
+      <style>body{font-family:"Malgun Gothic",sans-serif;margin:0;color:#111}section{padding:12mm 12mm;page-break-after:always}h1{text-align:center;font-size:19px;margin:0 0 4px}
+      h4{font-size:14px;margin:14px 0 6px}.sm-sub{font-weight:400;font-size:11px;color:#555}.mute{color:#777}
+      table{width:100%;border-collapse:collapse;font-size:12px}th,td{border:1px solid #333;padding:5px 7px;vertical-align:top;text-align:left;white-space:pre-wrap}
+      th{background:#f1f2f4;width:28%;font-weight:700}th.sec{background:#e4e6ea;width:auto}.sm-topic{page-break-inside:auto}
+      @media screen{body{background:#ddd}section{background:#fff;max-width:210mm;margin:10px auto}}</style></head><body>${pages}<script>window.onload=()=>window.print()<\/script></body></html>`);
+    w.document.close();
+  },
+  // 엑셀: 맨 앞 요약(한 줄 = 학생 × 주제) + 학생 한 명 = 시트 하나(주제별로 묶음)
+  async exStudents(btn) {
+    if (!await this.loadXLSX(btn)) return;
+    const cls = this.cls(this.sumData.cid), nm = nameMap(cls), wb = XLSX.utils.book_new(), used = new Set();
+    const stg = (s, k) => stageName(s, STAGES.findIndex(x => x.key === k)) || k, vt = x => x ? `${STANCE[x.stance]} - ${x.reason || ''}` : '';
+    const sum = [];
+    const sheets = cls.students.map(x => {
+      const sm = this.studentSum(x.no), rows = [[`${x.no} ${x.name} · 토론 활동 모음`], [`${cls.year}학년도 ${cls.name}`], []];
+      sm.deb.forEach(({s, t, r, rp, own, team, wrote, qs}) => {
+        const role = `${r.side === 'pro' ? '찬성' : '반대'} 측 토론자${r.clerk ? '(서기)' : ''}`;
+        sum.push({'학번':x.no, '이름':x.name, '날짜':s.date || '', '주제':s.title, '역할':role, '사전 투표':'', '사후 투표':'', '바뀐 이유':'', '질문':qs.join(' / '),
+          '1차 보고서':rp.pre ? '제출' : rp.r1 ? '임시 저장' : '미작성', '2차 보고서':rp.post ? '제출' : rp.r2 ? '임시 저장' : '미작성', '본인 발언 수':own.length, '올린 기록 수':wrote, '한 줄 느낀점·소감':rp.reflection || ''});
+        rows.push([`■ ${s.title}`, `${s.date || ''} · ${t.name} · ${role}`], ['[1차(사전) 보고서]', rp.pre ? '제출' : rp.r1 ? '임시 저장' : '미작성']);
+        REPORT1.filter(Array.isArray).forEach(q => rows.push([q[1], rp.r1?.[q[0]] || '']));
+        rows.push(['[2차(사후) 보고서]', rp.post ? '제출' : rp.r2 ? '임시 저장' : '미작성']);
+        REPORT2.filter(Array.isArray).forEach(q => rows.push([q[1], rp.r2?.[q[0]] || '']));
+        rows.push(['한 줄 느낀점', rp.reflection || ''], [`[본인 발언] ${own.length}건${wrote ? ` · 본인이 올린 기록 ${wrote}건` : ''}`, '']);
+        own.forEach(y => rows.push([stg(s, y.stage), y.text + (y.by && y.by !== x.no ? ` (기록: ${nm[y.by] || y.by})` : '')]));
+        rows.push(['[우리 팀 전체 기록]', '']);
+        team.forEach(y => rows.push([stg(s, y.stage), `${y.speaker === x.no ? '★ ' : ''}${nm[y.speaker] || '-'}: ${y.text}`]));
+        rows.push([]);
+      });
+      sm.aud.forEach(({s, t, v, qs, rp}) => {
+        sum.push({'학번':x.no, '이름':x.name, '날짜':s.date || '', '주제':s.title, '역할':t.aud, '사전 투표':vt(v.pre), '사후 투표':vt(v.post), '바뀐 이유':v.post?.changeReason || '', '질문':qs.join(' / '),
+          '1차 보고서':'', '2차 보고서':'', '본인 발언 수':'', '올린 기록 수':'', '한 줄 느낀점·소감':[rp.post, rp.reflection].filter(Boolean).join(' / ')});
+        rows.push([`■ ${s.title}`, `${s.date || ''} · ${t.name} · ${t.aud}`], ['사전 투표', vt(v.pre)], ['사후 투표', vt(v.post)], ['바뀐 이유', v.post?.changeReason || ''],
+          ['설득력 있던 논거', v.post?.best || ''], ['질문', qs.join('\n')], ['소감', [rp.post, rp.reflection].filter(Boolean).join('\n')], []);
+      });
+      if (!sm.deb.length && !sm.aud.length) rows.push(['참여한 토론 기록이 없습니다.']);
+      let name = `${x.no} ${x.name}`.replace(/[\[\]:*?\/\\]/g, '').slice(0, 31); while (used.has(name)) name = name.slice(0, 29) + '_' + used.size; used.add(name);
+      return [name, rows];
+    });
+    const ws0 = XLSX.utils.json_to_sheet(sum.length ? sum : [{'내용':'없음'}]); ws0['!cols'] = [8, 8, 11, 34, 16, 30, 30, 30, 30, 10, 10, 8, 8, 30].map(w => ({wch:w}));
+    XLSX.utils.book_append_sheet(wb, ws0, '요약(학생×주제)');
+    sheets.forEach(([name, rows]) => { const ws = XLSX.utils.aoa_to_sheet(rows); ws['!cols'] = [{wch:30}, {wch:90}]; XLSX.utils.book_append_sheet(wb, ws, name); });
+    XLSX.writeFile(wb, `${cls.year} ${cls.name} 학생별 토론 활동.xlsx`.replace(/[\\/:*?"<>|]/g, '_'));
   },
   /* ---------- 생기부 ---------- */
   async renderRecord(body) {
