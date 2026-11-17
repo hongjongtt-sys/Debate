@@ -261,6 +261,8 @@ const params = new URLSearchParams(location.search);
 const route = (location.hash || '').replace('#', '') || 'student';
 const studentUrl = sid => location.origin + location.pathname + '?s=' + sid;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+// 명단은 저장된 순서와 상관없이 화면에서는 항상 학번순으로 (저장된 데이터는 바꾸지 않음)
+function sortByNo(list) { return [...(list || [])].sort((a, b) => (+a.no || 0) - (+b.no || 0) || String(a.no).localeCompare(String(b.no))); }
 function nameMap(cls) { const m = {}; (cls?.students || []).forEach(x => m[x.no] = x.name); return m; }
 const canWrite = (s, r) => r.side !== 'aud' && (r.clerk || s.teamWrite !== false);
 // 서기가 아닌 팀원이 쓴 기록에는 '보충' 표시
@@ -1067,7 +1069,7 @@ const Board = {
     if (!this.sid) { const a = await getDoc(doc(db, 'debate_meta', 'active')); this.sid = a.exists() ? a.data().sid : null; }
     if (!this.sid) { app.innerHTML = '<div class="wrap"><div class="card">진행할 토론이 없습니다. 관리 화면에서 회차를 만드세요.</div></div>'; return; }
     const sd = await getDoc(sref(this.sid)); this.s = sd.data();
-    const cd = await getDoc(doc(db, 'debate_classes', this.s.classId)); this.cls = cd.data() || {students:[]};
+    const cd = await getDoc(doc(db, 'debate_classes', this.s.classId)); this.cls = cd.data() || {students:[]}; this.cls.students = sortByNo(this.cls.students);
     const sid = this.sid;
     onSnapshot(sref(sid), d => {
       this.s = d.data();
@@ -1336,7 +1338,7 @@ const Admin = {
   async start() { await this.load(); this.render(); },
   async load() {
     const [c, s, a] = await Promise.all([getDocs(collection(db, 'debate_classes')), getDocs(collection(db, 'debate_sessions')), getDoc(doc(db, 'debate_meta', 'active'))]);
-    this.classes = c.docs.map(d => ({id:d.id, ...d.data()})).sort((x, y) => (y.year || 0) - (x.year || 0) || (x.name || '').localeCompare(y.name || ''));
+    this.classes = c.docs.map(d => { const v = d.data(); return {id:d.id, ...v, students:sortByNo(v.students)}; }).sort((x, y) => (y.year || 0) - (x.year || 0) || (x.name || '').localeCompare(y.name || ''));
     this.sessions = s.docs.map(d => ({id:d.id, ...d.data()})).sort((x, y) => (y.createdAt || 0) - (x.createdAt || 0));
     this.active = a.exists() ? a.data().sid : null;
   },
